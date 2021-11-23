@@ -1,0 +1,500 @@
+'Independent Regex:  State class module
+'Version:  1.0
+'Date:  November 2021
+'Other required class modules:  NFA, REGEX
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+Option Explicit
+'----------------------------------------------------------------------------------------------------------
+'ID in master array of states (index in statearStates_REGEX)
+Private lngStateID As Long
+'Value that goes with out arrow of state (if more than one out arrow, must be empty)
+Private strEle As String
+'Class type:  one-out, split, match
+Private intClass As Integer
+'IDs of out/child states (indices in statearStates_REGEX)
+Private lngarOutStates() As Long
+'Min number of times that a search can pass through state (used for {} quantifiers)
+Private lngPassMin As Long
+'Max number of times that a search can pass through state (used for {} quantifiers)
+Private lngPassMax As Long
+'Number of times that a search has touched a state (used for {} quantifiers)
+Private lngHit As Long
+'State ID of the child that's part of a backwards loop (used for {} quantifiers)
+Private lngLoopStateID As Long
+'----------------------------------------------------------------------------------------------------------
+'intClass constants (same as REGEX and NFA)
+Private Const intOneOut As Integer = 1
+Private Const intSplit As Integer = 2
+Private Const intMatch As Integer = 3
+'
+'Standin for null integers (for IDs and some other numbers)
+Const intNull As Integer = -1
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'PUBLIC FUNCTION(S)
+
+Public Function AddOutArrow(statearStates_REGEX() As State, lngNewOutStateID As Long)
+'----------------------------------------------------------------------------------------------------------
+Dim strNewEle As String
+'----------------------------------------------------------------------------------------------------------
+'Gets element string of new state
+strNewEle = statearStates_REGEX(lngNewOutStateID).GetEle
+'Adds new state ID to list of out arrows for current state (based on element)
+HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarOutStates, lngNewOutStateID, strNewEle
+End Function
+
+Public Function GetClass()
+'Returns class
+GetClass = intClass
+End Function
+
+Public Function GetEle() As String
+'Returns state element (may be empty)
+GetEle = strEle
+End Function
+
+Public Function GetHitCount() As Integer
+'Gets number of times state has been accessed
+GetHitCount = lngHit
+End Function
+
+Public Function GetID() As Long
+'Returns state ID
+GetID = lngStateID
+End Function
+
+Public Function GetLoopStateID() As Long
+'Gets ID of child that creates a loop (used for {} quantifiers)
+GetLoopStateID = lngLoopStateID
+End Function
+
+Public Function GetOutStates() As Long()
+'Returns out states
+GetOutStates = lngarOutStates
+End Function
+
+Public Function GetPassMax() As Integer
+'Gets max number of times a state can be accessed
+GetPassMax = lngPassMax
+End Function
+
+Public Function GetPassMin() As Integer
+'Gets min number of times a state must be accessed (in order to continue past a loop, used for {} quantifiers)
+GetPassMin = lngPassMin
+End Function
+
+Public Function HitIncrement()
+'Increments number of times a state has been visited
+lngHit = lngHit + 1
+End Function
+
+Public Function HitReset()
+'Resets number of times a state has been visited
+lngHit = 0
+End Function
+
+Public Function SetClass(intClassX As Integer)
+'Sets state type of state
+intClass = intClassX
+End Function
+
+Public Function SetHitCount(lngHitX As Integer)
+'Sets number of times state has been accessed
+lngHit = lngHitX
+End Function
+
+Public Function SetLoopStateID(lngLoopStateIDX As Integer)
+'Sets ID of child that creates a loop (used for {} quantifiers)
+lngLoopStateID = lngLoopStateIDX
+End Function
+
+Public Function SetPassMax(lngPassMaxX As Integer)
+'Sets max number of times a state can be accessed
+lngPassMax = lngPassMaxX
+End Function
+
+Public Function SetPassMin(lngPassMinX As Integer)
+'Sets min number of times a state must be accessed (in order to continue past a loop, used for {} quantifiers)
+lngPassMin = lngPassMinX
+End Function
+
+Public Sub Setup(statearStates_REGEX() As State, intClassX As Integer, Optional strEleX As String = "", _
+Optional lngPassMinX As Integer = -1, Optional lngPassMaxX As Integer = -1, Optional lngLoopStateIDX As Integer = -1, _
+Optional lngHitX As Integer = 0)
+'Changes settings (good for new states)
+'----------------------------------------------------------------------------------------------------------
+Dim lngStateIDX As Long
+'----------------------------------------------------------------------------------------------------------
+'Sets element (might be empty)
+strEle = strEleX
+'Sets state type
+intClass = intClassX
+'----------------------------------------------------------------------------------------------------------
+'Adds to array of state IDs, saves ID number
+lngStateIDX = AddItemToArrayEnd_State(statearStates_REGEX, Me)
+lngStateID = lngStateIDX
+'----------------------------------------------------------------------------------------------------------
+'Sets quantifier settings
+lngPassMin = lngPassMinX
+lngPassMax = lngPassMaxX
+lngLoopStateID = lngLoopStateIDX
+'Starts counter for number of times hit
+lngHit = lngHitX
+'
+'
+End Sub
+
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'PRIVATE FUNCTION(S)
+
+Private Function AddItemToArrayEnd_State(statearStates_REGEX() As State, stateX As State, Optional intLBound As Integer = 0) As Integer
+'Adds state to end of (dynamic) 1D state array
+'Returns new index (state ID)
+'If uninitialized, uses the given lower bound (default = 0)
+'----------------------------------------------------------------------------------------------------------
+'If array is not initialized (no items), adds new item and exits
+If ArrayInitialized_1D(statearStates_REGEX) = False Then
+    ReDim statearStates_REGEX(intLBound To intLBound)
+    Set statearStates_REGEX(intLBound) = stateX
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Increases size of array
+ReDim Preserve statearStates_REGEX(intLBound To (UBound(statearStates_REGEX) + 1))
+'----------------------------------------------------------------------------------------------------------
+'Places new item
+Set statearStates_REGEX(UBound(statearStates_REGEX)) = stateX
+'Returns new index/state ID
+AddItemToArrayEnd_State = UBound(statearStates_REGEX)
+'
+'
+End Function
+
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'HELPER FUNCTION(S) (PRIVATE; SAME AS HELPER FUNCTIONS IN REGEX)
+
+Private Function HELPER_AddStateIDToArrayInEleOrder(statearStates_REGEX() As State, lngarSomeStateIDs() As Long, _
+lngNewStateID As Long, strNewEle As String, Optional intLBound As Integer = 0, Optional blUniqueIDs As Boolean = False)
+'Adds state ID (integer) to 1D array in correct order (first by element, then by ID)- array already assumed to be in order
+'Given array cannot be static
+'----------------------------------------------------------------------------------------------------------
+Dim lngIndex As Long, lngIndexNew As Long
+'----------------------------------------------------------------------------------------------------------
+'Value returned by HELPER_FindStateIDPlacementInEleOrderASCII if invalid duplicate ID number is found
+Const intInvalidDup As Integer = -2
+'----------------------------------------------------------------------------------------------------------
+'If array is not initialized (no items), adds new item and exits
+If ArrayInitialized_1D(lngarSomeStateIDs) = False Then
+    ReDim lngarSomeStateIDs(intLBound To intLBound)
+    lngarSomeStateIDs(intLBound) = lngNewStateID
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'If array is one item, and the one item has a null ID, replaces this item with ID being added
+If LBound(lngarSomeStateIDs) = UBound(lngarSomeStateIDs) Then
+    If lngarSomeStateIDs(LBound(lngarSomeStateIDs)) = intNull Then
+        lngarSomeStateIDs(LBound(lngarSomeStateIDs)) = lngNewStateID
+        Exit Function
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets index for new state ID based on accompanying element string
+'If adding duplicates is not permitted, and new item is a duplicate, does not add element to array
+lngIndexNew = HELPER_FindStateIDPlacementInEleOrderASCII(statearStates_REGEX, lngarSomeStateIDs, strNewEle, blUniqueIDs, lngNewStateID)
+'If invalid duplicate ID found, does not add to array
+If lngIndexNew = intInvalidDup Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Increases size of array
+ReDim Preserve lngarSomeStateIDs(UBound(lngarSomeStateIDs) + 1)
+'----------------------------------------------------------------------------------------------------------
+'All items that are at or beyond the new array are shifted right/up
+For lngIndex = (UBound(lngarSomeStateIDs) - 1) To lngIndexNew Step -1
+    lngarSomeStateIDs(lngIndex + 1) = lngarSomeStateIDs(lngIndex)
+Next lngIndex
+'----------------------------------------------------------------------------------------------------------
+'Places new state ID in array of state IDs
+lngarSomeStateIDs(lngIndexNew) = lngNewStateID
+'
+'
+End Function
+
+Private Function HELPER_FindStateIDPlacementInEleOrderASCII(statearStates_REGEX() As State, lngarSomeStateIDs() As Long, _
+strEle As String, Optional blUniqueIDs As Boolean = False, Optional lngID As Long = intNull, Optional lngIndexA As Long = intNull, Optional lngIndexB As Long = intNull) As Long
+'Gets placement (index) of state in list of state IDs (based on its value, and possibly also its index; assumes everything beyond new index will be shifted right/up)
+'Array of states is already in ASCII order by value
+'Do not give lngIndexA and lngIndexB unless it is known that given string will be placed in that range- those variables are for recursive purposes
+'Uses global state array
+'----------------------------------------------------------------------------------------------------------
+Dim blCheckBackward As Boolean, blCheckForward As Boolean
+Dim intAscComp As Integer, intLBound As Integer
+Dim lngIndexMiddle As Long, lngIndexReturn As Long, lngUBound As Long
+Dim strMiddle As String
+'----------------------------------------------------------------------------------------------------------
+'Value to return if invalid duplicate ID number is found
+Const intInvalidDup As Integer = -2
+'----------------------------------------------------------------------------------------------------------
+'Returns 0 if array not initialized
+If ArrayInitialized_1D(lngarSomeStateIDs) = False Then
+    lngIndexReturn = 0
+    Exit Function
+End If
+'
+'Gets upper and lower bounds
+intLBound = LBound(lngarSomeStateIDs)
+lngUBound = UBound(lngarSomeStateIDs)
+'----------------------------------------------------------------------------------------------------------
+'If either index not given, sets to LBound and UBound of given array
+If (lngIndexA = intNull) Or (lngIndexB = intNull) Then
+    lngIndexA = intLBound
+    lngIndexB = lngUBound
+End If
+'----------------------------------------------------------------------------------------------------------
+'If start and end indices are the same, finds placement
+If lngIndexA = lngIndexB Then
+    If CompareASCII(statearStates_REGEX(lngarSomeStateIDs(lngIndexA)).GetEle, strEle) = -1 Then
+        'String at index A/B is lower/earlier than string being placed- new index will be after this
+        lngIndexReturn = lngIndexA + 1
+        GoTo EXITFUNC
+    Else
+        'String at index A/B is higher/later than, or the same as, string being placed- this will be the new index
+        lngIndexReturn = lngIndexA
+        GoTo EXITFUNC
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'If start and end indices are adjacent, finds placement
+If lngIndexA = (lngIndexB - 1) Then
+    If strEle = statearStates_REGEX(lngarSomeStateIDs(lngIndexA)).GetEle Then
+        'Same string as index A, this is the correct index- returns value
+        lngIndexReturn = lngIndexA
+        GoTo EXITFUNC
+    End If
+    '
+    If CompareASCII(statearStates_REGEX(lngarSomeStateIDs(lngIndexA)).GetEle, strEle) = 1 Then
+        'String at index A is higher/later than string being placed- this will be the new index
+        lngIndexReturn = lngIndexA
+        GoTo EXITFUNC
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    If strEle = statearStates_REGEX(lngarSomeStateIDs(lngIndexB)).GetEle Then
+        'Same string as index B, this is the correct index- returns value
+        lngIndexReturn = lngIndexB
+        GoTo EXITFUNC
+    End If
+    '
+    If CompareASCII(statearStates_REGEX(lngarSomeStateIDs(lngIndexB)).GetEle, strEle) = 1 Then
+        'String at index B is higher/later than string being placed- this will be the new index
+        lngIndexReturn = lngIndexB
+        GoTo EXITFUNC
+    Else
+        'String at index B is lower/sooner than string being placed- next index will be the new index
+        lngIndexReturn = lngIndexB + 1
+        GoTo EXITFUNC
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets next index to check (exact middle, or else the floor)
+lngIndexMiddle = Int(lngIndexA + ((lngIndexB - lngIndexA) / 2))
+'Gets string at middle index
+strMiddle = statearStates_REGEX(lngarSomeStateIDs(lngIndexMiddle)).GetEle
+'----------------------------------------------------------------------------------------------------------
+If strEle = strMiddle Then
+    'Found correct placement for given string, returns value
+    lngIndexReturn = lngIndexMiddle
+    GoTo EXITFUNC
+Else
+    intAscComp = CompareASCII(strEle, strMiddle)
+    '
+    If intAscComp = 1 Then
+        'String should be later- looks above the current middle string
+        lngIndexReturn = HELPER_FindStateIDPlacementInEleOrderASCII(statearStates_REGEX, lngarSomeStateIDs, strEle, blUniqueIDs, _
+        lngID, (lngIndexMiddle + 1), lngIndexB)
+    ElseIf intAscComp = -1 Then
+        'String should be earlier- looks below the current middle string
+        lngIndexReturn = HELPER_FindStateIDPlacementInEleOrderASCII(statearStates_REGEX, lngarSomeStateIDs, strEle, blUniqueIDs, _
+        lngID, lngIndexA, (lngIndexMiddle - 1))
+    End If
+End If
+'
+'Returns placement index
+HELPER_FindStateIDPlacementInEleOrderASCII = lngIndexReturn
+Exit Function
+'
+'
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+EXITFUNC:
+'
+'If ID number given, finds specific placement amongst ID numbers with given element
+'Note:  at this point, return index can be anywhere from LBound to UBound + 1
+If lngID <> intNull Then
+    If lngIndexReturn > intLBound Then
+        'Return index not at lower bound, can look backwards
+        blCheckBackward = True
+    End If
+    If lngIndexReturn < (lngUBound + 1) Then
+        'Return index not above upper bound, can look forwards
+        blCheckForward = True
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    If blCheckBackward Then
+        'Decrements return index until A) at lower bound or B) previous ID has a different element or C) ID being placed is bigger than previous ID number
+        Do Until (lngIndexReturn = intLBound) _
+        Or (strEle <> statearStates_REGEX(lngarSomeStateIDs(lngIndexReturn - 1)).GetEle) _
+        Or (lngID > lngarSomeStateIDs(lngIndexReturn - 1))
+            lngIndexReturn = lngIndexReturn - 1
+        Loop
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    If blCheckForward Then
+        'Increments return index until A) at upper bound, B) current ID (which will be shoved right) has a different element, _
+        or C) ID being placed is smaller than current ID number (which will be shoved right)
+        Do Until (lngIndexReturn = lngUBound) _
+        Or (strEle <> statearStates_REGEX(lngarSomeStateIDs(lngIndexReturn)).GetEle) _
+        Or (lngID < lngarSomeStateIDs(lngIndexReturn))
+            lngIndexReturn = lngIndexReturn + 1
+        Loop
+        '
+        'If return index is at upper bound, checks whether it needs to be upper bound + 1
+        If lngIndexReturn = lngUBound Then
+            If (strEle = statearStates_REGEX(lngarSomeStateIDs(lngUBound)).GetEle) _
+            And (lngID > lngarSomeStateIDs(lngUBound)) Then
+                lngIndexReturn = lngIndexReturn + 1
+            End If
+        End If
+    End If
+End If 'lngID <> intNull
+'----------------------------------------------------------------------------------------------------------
+'If duplicates ID numbers are invalid, checks whether duplicate
+If blUniqueIDs Then
+    'If item at return index has the same state ID, it's a duplicate
+    If lngIndexReturn <= lngUBound Then
+        If lngID = lngarSomeStateIDs(lngIndexReturn) Then
+            lngIndexReturn = intInvalidDup
+            HELPER_FindStateIDPlacementInEleOrderASCII = lngIndexReturn
+            Exit Function
+        End If
+    End If
+    '
+    'If item at previous index (return index - 1) has the same state ID, it's a duplicate
+    If lngIndexReturn > intLBound Then
+        If lngID = lngarSomeStateIDs(lngIndexReturn - 1) Then
+            lngIndexReturn = intInvalidDup
+            HELPER_FindStateIDPlacementInEleOrderASCII = lngIndexReturn
+            Exit Function
+        End If
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'Returns final placement index
+HELPER_FindStateIDPlacementInEleOrderASCII = lngIndexReturn
+'
+'
+End Function
+
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'TOOLBOX FUNCTION(S) (PRIVATE)
+
+Private Function ArrayInitialized_1D(vararX As Variant) As Boolean
+'Determines whether a 1D array contains any elements
+    'Note:  does not look at the elements, elements may be empty, but if this returns true, they exist
+    'Note:  does not have to be a variant array
+'Return value
+    'True = has a lower bound
+    'False = does not have a lower bound
+'-----------------------------------------------------------------------------------------------------------------------------
+Dim lngLBound As Long
+'-----------------------------------------------------------------------------------------------------------------------------
+On Error GoTo ErrHandler
+'-----------------------------------------------------------------------------------------------------------------------------
+lngLBound = LBound(vararX)
+'
+ArrayInitialized_1D = True
+Exit Function
+'-----------------------------------------------------------------------------------------------------------------------------
+'-----------------------------------------------------------------------------------------------------------------------------
+ErrHandler:
+On Error GoTo 0
+'
+End Function
+
+Private Function CompareASCII(strA As String, strB As String) As Integer
+'Compares two strings and determines which has the higher ASCII value (char by char- whichever has the higher char first is considered higher)
+'If the strings match for the entirety of one of the string (e.g., "toast" and "toaster"), fewer letters = lower value
+'"" = first, before any ASCII value
+'return values:
+    '1:  strA has higher ASCII value (strA comes "after" strB)
+    '0:  same string
+    '-1:  strB has higher ASCII value (strA comes "before" strB)
+'----------------------------------------------------------------------------------------------------------
+Dim intIndexA As Integer, intIndexB As Integer, intLenA As Integer, intLenB As Integer
+Dim strCharA As String, strCharB As String
+'----------------------------------------------------------------------------------------------------------
+'If strings are identical, returns appropriate value
+If strA = strB Then
+    CompareASCII = 0
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+If strA = "" Then
+    'strA is empty, has lower ASCII value
+    CompareASCII = -1
+    Exit Function
+End If
+If strB = "" Then
+    'strB is empty, so strA has higher ASCII value
+    CompareASCII = 1
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets length of both strings
+intLenA = Len(strA)
+intLenB = Len(strB)
+'Starting point = start of both strings
+intIndexA = 1
+intIndexB = 1
+'
+Do While (intIndexA <= intLenA) And (intIndexB <= intLenB)
+    'Gets current char for each string
+    strCharA = Mid(strA, intIndexA, 1)
+    strCharB = Mid(strB, intIndexB, 1)
+    '
+    If Asc(strCharA) < Asc(strCharB) Then
+        'strB has higher ASCII value
+        CompareASCII = -1
+        Exit Function
+    ElseIf Asc(strCharA) > Asc(strCharB) Then
+        'strA has higher ASCII value
+        CompareASCII = 1
+        Exit Function
+    Else
+        'Match, increments both indices
+        intIndexA = intIndexA + 1
+        intIndexB = intIndexB + 1
+    End If
+Loop
+'
+'If here, out of char in one of the strings, and both identical so far (e.g. "fact" and "factual")
+'The one with fewer letters has the lower value
+If intLenA < intLenB Then
+    'strA is shorter-  strB has higher ASCII value
+    CompareASCII = -1
+Else
+    'strA is longer-  strA has higher ASCII value
+    CompareASCII = 1
+End If
+'
+'
+End Function

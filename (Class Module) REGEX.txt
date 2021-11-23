@@ -1,0 +1,2768 @@
+'Independent Regex:  REGEX class module
+'Version:  1.0
+'Date:  November 2021
+'Other required class modules:  NFA, State
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+Option Explicit
+'
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+
+'PRIVATE VARIABLES
+'
+'Main NFA
+Private NFA_REGEX As New NFA
+'Array holding the states (in index/ID order)
+Private statearStates_REGEX() As State
+'Array holding the state IDs (in element ASCII order)
+Private lngarStateIDs_REGEX() As Long
+'----------------------------------------------------------------------------------------------------------
+'Array of metachar
+Private strarMetachar_REGEX(37) As String
+'Error metachar for internal use (if found in user input, will treat the individual char as separate literals)
+Private Const strMetaError_REGEX As String = "error"
+'Concatenation metachar for internal use (if found in user input, will treat the individual char as separate literals)
+Private Const strConcat_REGEX As String = "@@"
+'----------------------------------------------------------------------------------------------------------
+'Indices related to strarMetachar_REGEX()
+'
+'Index for first of single-char operators (for checking precedence in regex array)
+Private Const intMetaCharFirstOpPrecIndex As Integer = 0
+'Index for last of single-char operators (for checking precedence in regex array)
+Private Const intMetaCharLastOpPrecIndex As Integer = 6
+'
+'Index for first of NON-parenthetical single-char operators (includes concatenation string, which is not allowed in raw input, so be wary)
+Private Const intMetaCharFirstOpPrecNONParenIndex As Integer = 2
+'Index for last of NON-parenthetical single-char operators (includes concatenation string, which is not allowed in raw input, so be wary)
+Private Const intMetaCharLastOpPrecNONParenIndex As Integer = 6
+'
+'Index for first of single-char, quantifier metachar
+Private Const intMetaCharFirstSCQuantIndex As Integer = 4
+'Index for last of single-char, quantifier metachar
+Private Const intMetaCharLastSCQuantIndex As Integer = 6
+'
+'Index for first of "\" metachar
+Private Const intMetaCharFirstBackslashIndex As Integer = 12
+'Index for last of "\" metachar
+Private Const intMetaCharLastBackslashIndex As Integer = 37
+'
+'Index of first metachar that:  1) starts with "\", 2) is 2+ char long, and 3) represents a single (escaped) literal char
+Private Const intMetaCharFirstBackslashSingIndex As Integer = 18
+'Index of last metachar that:  1) starts with "\", 2) is 2+ char long, and 3) represents a single (escaped) literal char
+Private Const intMetaCharLastBackslashSingIndex As Integer = 31
+'
+'Index for first of "\" metachar that represent multiple-char literal strings
+'Note:  this does not include any parts of operators
+Private Const intMetaCharFirstBackslashMultiIndex As Integer = 32
+'Index for last of  "\" metachar that represent multiple-char literal strings
+Private Const intMetaCharLastBackslashMultiIndex As Integer = 37
+'
+'Operator precedence (higher number = higher precedence; using the LOWEST index of one of the members of each precedence category)
+Private Const intPrec_Empty As Integer = -1 'Not actually in array
+Private Const intPrec_Paren As Integer = 0 'Parentheses = lowest precedence
+Private Const intPrec_Disjunct As Integer = 2
+    'corresponds with union, except that I made it explicitly exclusive
+Private Const intPrec_Concat As Integer = 3
+Private Const intPrec_Quant As Integer = 4 'Any quantifier = highest precedence (?, *, +, {})
+    'corresponds with Kleene star ("closure")
+'
+'intClass constants (same as NFA and State)
+Private Const intOneOut As Integer = 1
+Private Const intSplit As Integer = 2
+Private Const intMatch As Integer = 3
+'
+'Standin for null integers (for IDs and some other numbers)
+Const intNull As Integer = -1
+
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'PUBLIC FUNCTION(S)
+'
+Public Function Setup(ByVal strRegex As String) As Boolean
+'Compares a search string to a regular expression; if there's a match, returns true
+'----------------------------------------------------------------------------------------------------------
+Dim strarRegexPostfix() As String
+'----------------------------------------------------------------------------------------------------------
+On Error GoTo EXITFUNC
+'----------------------------------------------------------------------------------------------------------
+'Empty/null regular expression, no need to create NFA (successful setup)
+If Len(strRegex) = 0 Then
+    Setup = True
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Sets up variables that are meant to remain constant, but that VBA won't allow to set as real constants
+PREP_A_SetConstants
+'----------------------------------------------------------------------------------------------------------
+'Gets postfix array for regex pattern
+strarRegexPostfix = PREP_B_RegexToPostfixArray(strRegex)
+'----------------------------------------------------------------------------------------------------------
+If ArrayInitialized_1D(strarRegexPostfix) Then
+    'Postfix array contains materials
+    '
+    'If postfix array is just the error string, creates "error NFA" (not really building the whole NFA- just a single state, which is an error)
+    If strarRegexPostfix(LBound(strarRegexPostfix)) = strMetaError_REGEX Then
+        BUILD_CreateErrorNFA
+        '
+        'Bad setup
+        Setup = False
+        Exit Function
+    End If
+    '
+    'Populates NFA with postfix regex array
+    BUILD_A_PopulateNFA strarRegexPostfix
+    '
+    'Successful setup
+    Setup = True
+Else
+    'No need to create NFA- successful setup
+    Setup = True
+End If
+'
+'
+Exit Function
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'Error handler- creates "error NFA" (not really building the whole NFA- just a single state, which is an error)
+EXITFUNC:
+Debug.Print "Setup:  ERROR # = " & CStr(Err.Number) & "; strRegex = '" & strRegex & "'"
+BUILD_CreateErrorNFA
+'
+'
+End Function
+
+Public Function Match(ByVal strSearch As String, Optional blCaseSensitive As Boolean = True, Optional blWholeStrOnly As Boolean = False) As Boolean
+'Compares a search string to a regular expression; if there's a match, returns true
+'----------------------------------------------------------------------------------------------------------
+On Error GoTo EXITFUNC
+'----------------------------------------------------------------------------------------------------------
+If ArrayInitialized_1D(lngarStateIDs_REGEX) Then
+    'NFA was created
+    '
+    If statearStates_REGEX(LBound(statearStates_REGEX)).GetEle = strMetaError_REGEX Then
+        'NFA was erroneous, automatically returns false
+        Exit Function
+    Else
+        'Determines whether search string fits NFA
+        Match = SEARCH_A_IsMatch(strSearch, blWholeStrOnly, blCaseSensitive)
+    End If
+Else
+    'Empty NFA, automatically returns true
+    Match = True
+End If
+'
+'
+Exit Function
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'Error handler
+EXITFUNC:
+Debug.Print "Match:  ERROR # = " & CStr(Err.Number) & "; strSearch = '" & strSearch & "'; blCaseSensitive = " & CStr(blCaseSensitive) & "; blWholeStrOnly = " & CStr(blWholeStrOnly)
+'
+'
+End Function
+
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'PRIVATE FUNCTION(S)
+
+Private Function BUILD_A_PopulateNFA(strarRegexPostfix() As String)
+'Populates current NFA using regext postfix array items
+'Uses a version of Thompson's construction algorithm
+'----------------------------------------------------------------------------------------------------------
+Dim lngEleIndex As Long
+Dim stackNFA() As New NFA
+Dim NFA_A As New NFA, NFA_B As New NFA
+Dim stateRoot As State
+Dim strEle As String
+'----------------------------------------------------------------------------------------------------------
+'Gives stack an empty item (considered empty)
+ReDim stackNFA(0)
+'----------------------------------------------------------------------------------------------------------
+For lngEleIndex = LBound(strarRegexPostfix) To UBound(strarRegexPostfix)
+    'Gets current element
+    strEle = strarRegexPostfix(lngEleIndex)
+    '
+    If strEle = strConcat_REGEX Then
+        'Concatenation
+        '
+        'Gets two top NFAs from NFA stack
+        Set NFA_B = StackPop_NFA(stackNFA)
+        Set NFA_A = StackPop_NFA(stackNFA)
+        'Concatenates the two NFAs into a single NFA (NFA_A)
+        BUILD_ConcatNFA NFA_A, NFA_B
+        'Pushes new NFA_A back onto the stack
+        StackPush_NFA stackNFA, NFA_A
+    ElseIf strEle = "|" Then
+        'Exclusive or
+        '
+        'Gets two top NFAs from NFA stack
+        Set NFA_B = StackPop_NFA(stackNFA)
+        Set NFA_A = StackPop_NFA(stackNFA)
+        'Combines the two NFAs to create a single exclusive or NFA (NFA_A)
+        BUILD_ExclusiveOr NFA_A, NFA_B
+        'Pushes new NFA_A back onto the stack
+        StackPush_NFA stackNFA, NFA_A
+    ElseIf strEle = "?" Then
+        '0-1
+        '
+        'Gets top NFA from NFA stack
+        Set NFA_A = StackPop_NFA(stackNFA)
+        'Modifies NFA to be 0-1 of itself
+        BUILD_ZeroOrOne NFA_A
+        'Pushes new NFA back onto the stack
+        StackPush_NFA stackNFA, NFA_A
+    ElseIf strEle = "*" Then
+        '0+
+        '
+        'Gets top NFA from NFA stack
+        Set NFA_A = StackPop_NFA(stackNFA)
+        'Modifies NFA to be 0+ of itself
+        BUILD_ZeroPlus NFA_A
+        'Pushes new NFA back onto the stack
+        StackPush_NFA stackNFA, NFA_A
+    ElseIf strEle = "+" Then
+        '1+
+        '
+        'Gets top NFA from NFA stack
+        Set NFA_A = StackPop_NFA(stackNFA)
+        'Modifies NFA to be 1+ of itself
+        BUILD_OnePlus NFA_A
+        'Pushes new NFA back onto the stack
+        StackPush_NFA stackNFA, NFA_A
+    ElseIf (Left(strEle, 1) = "{") And (Right(strEle, 1) = "}") Then
+        '{}
+        '
+        'Gets top NFA from NFA stack
+        Set NFA_A = StackPop_NFA(stackNFA)
+        'Modifies NFA
+        BUILD_Quantifier NFA_A, strEle
+        'Pushes new NFA back onto the stack
+        StackPush_NFA stackNFA, NFA_A
+    Else
+        'Non-operator elements (including [] elements and anchors)
+        '
+        'Creates new NFA with element as value
+        Set NFA_A = New NFA
+        NFA_A.Setup statearStates_REGEX, strEle
+        'Pushes new NFA back onto the stack
+        StackPush_NFA stackNFA, NFA_A
+    End If
+Next lngEleIndex
+'----------------------------------------------------------------------------------------------------------
+'Gets final result
+Set NFA_A = StackPop_NFA(stackNFA)
+'
+'Sets main NFA as final result
+Set NFA_REGEX = NFA_A
+'
+'Adds one more state to front- this will be the root
+Set stateRoot = New State
+stateRoot.Setup statearStates_REGEX, intSplit
+stateRoot.AddOutArrow statearStates_REGEX, NFA_A.GetStartStateID
+NFA_REGEX.SetStartStateID (stateRoot.GetID)
+'----------------------------------------------------------------------------------------------------------
+'Populates array of state IDs (in ASCII order by element value)
+BUILD_CreateGlobalStateIDArray
+'
+'
+End Function
+
+Private Function BUILD_ConcatNFA(NFA_A As NFA, NFA_B As NFA)
+'Concatenates two NFAs- makes NFA_A bigger
+'----------------------------------------------------------------------------------------------------------
+Dim lngarChildren_B() As Long
+Dim lngEndStateID_NFA_A As Long, lngEndStateID_NFA_B As Long, lngStartStateID_NFA_B As Long
+Dim stateEnd_A As State, stateStart_B As New State
+'----------------------------------------------------------------------------------------------------------
+'Gets end state of NFA_A
+lngEndStateID_NFA_A = NFA_A.GetEndStateID()
+Set stateEnd_A = statearStates_REGEX(lngEndStateID_NFA_A)
+'----------------------------------------------------------------------------------------------------------
+'Gets start state of NFA_B
+lngStartStateID_NFA_B = NFA_B.GetStartStateID()
+Set stateStart_B = statearStates_REGEX(lngStartStateID_NFA_B)
+'
+'Gets end state ID of NFA_B
+lngEndStateID_NFA_B = NFA_B.GetEndStateID()
+'
+'Gets state IDs of the children of NFA_B's start state
+lngarChildren_B = stateStart_B.GetOutStates()
+'----------------------------------------------------------------------------------------------------------
+'NFA_A's end state = parent of NFA_B's start state
+stateEnd_A.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_B
+'Reclassifies NFA_A's former end state:  match => split
+stateEnd_A.SetClass (intSplit)
+'End state for NFA_A = end state for NFA_B
+NFA_A.SetEndStateID (lngEndStateID_NFA_B)
+'
+'
+End Function
+
+Private Function BUILD_CreateGlobalStateIDArray()
+'Creates array of state IDs in element (ASCII) order
+'Note:  does not check for unique IDs when adding, because there is no need to
+'----------------------------------------------------------------------------------------------------------
+Dim lngStateID As Long
+Dim strEle As String
+'----------------------------------------------------------------------------------------------------------
+For lngStateID = LBound(statearStates_REGEX) To UBound(statearStates_REGEX)
+    strEle = statearStates_REGEX(lngStateID).GetEle
+    HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarStateIDs_REGEX, lngStateID, strEle, LBound(statearStates_REGEX), False
+Next lngStateID
+'
+'
+End Function
+
+Private Function BUILD_ExclusiveOr(NFA_A As NFA, NFA_B As NFA)
+'Joins two NFAs to make an exclusive or- makes NFA_A bigger
+'----------------------------------------------------------------------------------------------------------
+Dim lngEndStateID_NFA_A As Long, lngEndStateID_NFA_B As Long, lngNewEndID As Long, lngNewStartID As Long, _
+lngStartStateID_NFA_A As Long, lngStartStateID_NFA_B As Long
+Dim stateEnd_A As New State, stateEnd_B As New State, stateNewEnd As New State, stateNewStart As New State
+'----------------------------------------------------------------------------------------------------------
+'Gets NFA_A's start and end states
+lngStartStateID_NFA_A = NFA_A.GetStartStateID()
+lngEndStateID_NFA_A = NFA_A.GetEndStateID()
+Set stateEnd_A = statearStates_REGEX(lngEndStateID_NFA_A)
+'
+'Gets NFA_B's start and end states
+lngStartStateID_NFA_B = NFA_B.GetStartStateID()
+lngEndStateID_NFA_B = NFA_B.GetEndStateID()
+Set stateEnd_B = statearStates_REGEX(lngEndStateID_NFA_B)
+'----------------------------------------------------------------------------------------------------------
+'Creates a new start state
+Set stateNewStart = New State
+stateNewStart.Setup statearStates_REGEX, intSplit
+lngNewStartID = stateNewStart.GetID()
+'
+'Creates a new end state
+Set stateNewEnd = New State
+stateNewEnd.Setup statearStates_REGEX, intMatch
+lngNewEndID = stateNewEnd.GetID()
+'----------------------------------------------------------------------------------------------------------
+'New start state will be the parent of:  NFA_A's start state, NFA_B's start state
+stateNewStart.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_A
+stateNewStart.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_B
+'
+'New end state will be the child of:  NFA_A's end state, NFA_B's end state
+stateEnd_A.AddOutArrow statearStates_REGEX, lngNewEndID
+stateEnd_B.AddOutArrow statearStates_REGEX, lngNewEndID
+'----------------------------------------------------------------------------------------------------------
+'Reclassifies NFA_A's and NFA_B's former end states:  match => single-out
+stateEnd_A.SetClass intOneOut
+stateEnd_B.SetClass intOneOut
+'----------------------------------------------------------------------------------------------------------
+'New start and end states = start and end states for NFA_A
+NFA_A.SetStartStateID (lngNewStartID)
+NFA_A.SetEndStateID (lngNewEndID)
+'
+'
+End Function
+
+Private Function BUILD_OnePlus(NFA_A As NFA)
+'Modifies NFA to make 1+ of itself- makes NFA_A bigger
+'----------------------------------------------------------------------------------------------------------
+Dim lngEndStateID_NFA_A As Long, lngNewEndID As Long, lngNewStartID As Long, lngStartStateID_NFA_A As Long
+Dim stateEnd_A As State, stateNewEnd As State, stateNewStart As State
+'----------------------------------------------------------------------------------------------------------
+'Gets NFA_A's start and end states
+lngStartStateID_NFA_A = NFA_A.GetStartStateID()
+lngEndStateID_NFA_A = NFA_A.GetEndStateID()
+Set stateEnd_A = statearStates_REGEX(lngEndStateID_NFA_A)
+'----------------------------------------------------------------------------------------------------------
+'Creates a new start state
+Set stateNewStart = New State
+stateNewStart.Setup statearStates_REGEX, intOneOut
+lngNewStartID = stateNewStart.GetID()
+'
+'Creates a new end state
+Set stateNewEnd = New State
+stateNewEnd.Setup statearStates_REGEX, intMatch
+lngNewEndID = stateNewEnd.GetID()
+'----------------------------------------------------------------------------------------------------------
+'New start state = parent of NFA_A's former start state
+stateNewStart.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_A
+'
+'NFA_A's original end state = parent of 1) NFA_A's original start state and 2) the new end state
+stateEnd_A.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_A
+stateEnd_A.AddOutArrow statearStates_REGEX, lngNewEndID
+'----------------------------------------------------------------------------------------------------------
+'Reclassifies NFA_A's former end state:  match => split
+stateEnd_A.SetClass (intSplit)
+'----------------------------------------------------------------------------------------------------------
+'New start and end states = start and end states for NFA_A
+NFA_A.SetStartStateID (lngNewStartID)
+NFA_A.SetEndStateID (lngNewEndID)
+'
+'
+End Function
+
+Private Function BUILD_Quantifier(NFA_A As NFA, ByVal strEle As String)
+'Modifies NFA to make M-N of itself- makes NFA_A bigger
+'Assumes valid quantifier
+'Valid formats (P = positive number; # = nonzero number)
+    '{P}
+    '{P,}
+    '{,P}
+    '{#,P}
+'----------------------------------------------------------------------------------------------------------
+Dim intCommaPos As Integer
+Dim lngEndStateID_NFA_A As Long, lngMax As Long, lngMin As Long, lngNewEndID As Long, lngNewStartID As Long, _
+lngStartStateID_NFA_A As Long
+Dim stateEnd_A As New State, stateNewEnd As New State, stateNewStart As New State
+'----------------------------------------------------------------------------------------------------------
+'Extracts lower and upper limit for loops of current NFA
+'
+'Removes surrounding {} from element (e.g., {2,3} => 2,3)
+strEle = Replace(strEle, "{", "")
+strEle = Replace(strEle, "}", "")
+'
+'Gets comma position in remaining parts of element
+intCommaPos = InStr(strEle, ",")
+'
+If intCommaPos < 1 Then
+    'No comma, single number (e.g., "4"), sets as min and max
+    lngMin = CInt(strEle)
+    lngMax = CInt(strEle)
+ElseIf intCommaPos = Len(strEle) Then
+    'Comma at end (e.g., "2,")- gets min, max = undefined
+    lngMin = CInt(Replace(strEle, ",", ""))
+    lngMax = intNull
+ElseIf intCommaPos = 1 Then
+    'Comma at front (e.g., ",2")- gets max, min = 0
+    lngMin = 0
+    lngMax = CInt(Replace(strEle, ",", ""))
+Else
+    'Splits by comma, gets min and max
+    lngMin = CInt(Left(strEle, intCommaPos - 1))
+    lngMax = CInt(GetStrSect(strEle, 1, False, intCommaPos, intCommaPos))
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets original start and end state
+lngStartStateID_NFA_A = NFA_A.GetStartStateID()
+lngEndStateID_NFA_A = NFA_A.GetEndStateID()
+Set stateEnd_A = statearStates_REGEX(lngEndStateID_NFA_A)
+'----------------------------------------------------------------------------------------------------------
+'Creates a new start state
+Set stateNewStart = New State
+stateNewStart.Setup statearStates_REGEX, intSplit
+lngNewStartID = stateNewStart.GetID()
+'
+'Creates a new end state
+Set stateNewEnd = New State
+stateNewEnd.Setup statearStates_REGEX, intMatch
+lngNewEndID = stateNewEnd.GetID()
+'----------------------------------------------------------------------------------------------------------
+'New start state = parent of NFA_A's former start state
+stateNewStart.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_A
+'If lower limit is 0, new start state also parent of the new end state
+If lngMin = 0 Then
+    stateNewStart.AddOutArrow statearStates_REGEX, lngNewEndID
+End If
+'
+'NFA_A's original end state = parent of 1) former start state and 2) the new end state
+stateEnd_A.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_A
+stateEnd_A.AddOutArrow statearStates_REGEX, lngNewEndID
+'----------------------------------------------------------------------------------------------------------
+'Reclassifies NFA_A's former end state:  match => split
+stateEnd_A.SetClass (intSplit)
+'----------------------------------------------------------------------------------------------------------
+'Sets up loop restrictions
+'
+'Former start state:  sets max number of passes for the NFA as a subgroup
+statearStates_REGEX(lngStartStateID_NFA_A).SetPassMax (lngMax)
+'
+'Former end state:  sets min number of passes for the NFA as a subgroup
+stateEnd_A.SetPassMin (lngMin)
+'Former end state:  sets the ID to loop back to (the former start state)
+stateEnd_A.SetLoopStateID (lngStartStateID_NFA_A)
+'----------------------------------------------------------------------------------------------------------
+'New start and end states = start and end states for NFA_A
+NFA_A.SetStartStateID (lngNewStartID)
+NFA_A.SetEndStateID (lngNewEndID)
+'
+'
+End Function
+
+Private Function BUILD_ZeroOrOne(NFA_A As NFA)
+'Modifies NFA to make 0-1 of itself- makes NFA_A bigger
+'----------------------------------------------------------------------------------------------------------
+Dim lngEndStateID_NFA_A As Long, lngNewEndID As Long, lngNewStartID As Long, lngStartStateID_NFA_A As Long
+Dim stateEnd_A As State, stateNewEnd As State, stateNewStart As State
+'----------------------------------------------------------------------------------------------------------
+'Gets start state of NFA_A
+lngStartStateID_NFA_A = NFA_A.GetStartStateID()
+'
+'Gets end state of NFA_A
+lngEndStateID_NFA_A = NFA_A.GetEndStateID()
+Set stateEnd_A = statearStates_REGEX(lngEndStateID_NFA_A)
+'----------------------------------------------------------------------------------------------------------
+'Creates a new start state
+Set stateNewStart = New State
+stateNewStart.Setup statearStates_REGEX, intSplit
+lngNewStartID = stateNewStart.GetID()
+'
+'Creates a new end state
+Set stateNewEnd = New State
+stateNewEnd.Setup statearStates_REGEX, intMatch
+lngNewEndID = stateNewEnd.GetID()
+'----------------------------------------------------------------------------------------------------------
+'New start state = parent of 1) NFA_A's former start state and 2) the new end state
+stateNewStart.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_A
+stateNewStart.AddOutArrow statearStates_REGEX, lngNewEndID
+'
+'NFA_A's original end state = parent of the new end state
+stateEnd_A.AddOutArrow statearStates_REGEX, lngNewEndID
+'----------------------------------------------------------------------------------------------------------
+'Reclassifies NFA_A's former end state:  match => single-out
+stateEnd_A.SetClass (intOneOut)
+'----------------------------------------------------------------------------------------------------------
+'New start and end states = start and end states for NFA_A
+NFA_A.SetStartStateID (lngNewStartID)
+NFA_A.SetEndStateID (lngNewEndID)
+'
+'
+End Function
+
+Private Function BUILD_ZeroPlus(NFA_A As NFA)
+'Modifies NFA to make 0+ of itself- makes NFA_A bigger
+'----------------------------------------------------------------------------------------------------------
+Dim lngEndStateID_NFA_A As Long, lngNewEndID As Long, lngNewStartID As Long, lngStartStateID_NFA_A As Long
+Dim stateEnd_A As State, stateNewEnd As State, stateNewStart As State
+'----------------------------------------------------------------------------------------------------------
+'Gets original start and end state
+lngStartStateID_NFA_A = NFA_A.GetStartStateID()
+lngEndStateID_NFA_A = NFA_A.GetEndStateID()
+Set stateEnd_A = statearStates_REGEX(lngEndStateID_NFA_A)
+'----------------------------------------------------------------------------------------------------------
+'Creates a new start state
+Set stateNewStart = New State
+stateNewStart.Setup statearStates_REGEX, intSplit
+lngNewStartID = stateNewStart.GetID()
+'
+'Creates a new end state
+Set stateNewEnd = New State
+stateNewEnd.Setup statearStates_REGEX, intMatch
+lngNewEndID = stateNewEnd.GetID()
+'----------------------------------------------------------------------------------------------------------
+'New start state = parent of 1) NFA_A's former start state and 2) the new end state
+stateNewStart.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_A
+stateNewStart.AddOutArrow statearStates_REGEX, lngNewEndID
+'
+'NFA_A's original end state = parent of 1) NFA_A's original start state and 2) the new end state
+stateEnd_A.AddOutArrow statearStates_REGEX, lngStartStateID_NFA_A
+stateEnd_A.AddOutArrow statearStates_REGEX, lngNewEndID
+'----------------------------------------------------------------------------------------------------------
+'Reclassifies NFA_A's former end state:  match => split
+stateEnd_A.SetClass (intSplit)
+'----------------------------------------------------------------------------------------------------------
+'New start and end states = start and end states for NFA_A
+NFA_A.SetStartStateID (lngNewStartID)
+NFA_A.SetEndStateID (lngNewEndID)
+'
+'
+End Function
+
+Private Function BUILD_CreateErrorNFA()
+'Builds "error NFA" (not really building the whole NFA- just a single state, which is an error)
+'----------------------------------------------------------------------------------------------------------
+Dim statearEmpty() As State
+Dim stateError As State
+'----------------------------------------------------------------------------------------------------------
+'Clears out state array
+statearStates_REGEX = statearEmpty
+'Creates single state with error string as element
+Set stateError = New State
+stateError.Setup statearStates_REGEX, intOneOut, strMetaError_REGEX
+'Creates global state ID array (of one ID)
+BUILD_CreateGlobalStateIDArray
+'
+'
+End Function
+
+Private Function HELPER_AddStateIDToArrayInEleOrder(statearStates_REGEX() As State, lngarSomeStateIDs() As Long, _
+lngNewStateID As Long, strNewEle As String, Optional intLBound As Integer = 0, Optional blUniqueIDs As Boolean = False)
+'Adds state ID (integer) to 1D array in correct order (first by element, then by ID)- array already assumed to be in order
+'Given array cannot be static
+'----------------------------------------------------------------------------------------------------------
+Dim lngIndex As Long, lngIndexNew As Long
+'----------------------------------------------------------------------------------------------------------
+'Value returned by HELPER_FindStateIDPlacementInEleOrderASCII if invalid duplicate ID number is found
+Const intInvalidDup As Integer = -2
+'----------------------------------------------------------------------------------------------------------
+'If array is not initialized (no items), adds new item and exits
+If ArrayInitialized_1D(lngarSomeStateIDs) = False Then
+    ReDim lngarSomeStateIDs(intLBound To intLBound)
+    lngarSomeStateIDs(intLBound) = lngNewStateID
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'If array is one item, and the one item has a null ID, replaces this item with ID being added
+If LBound(lngarSomeStateIDs) = UBound(lngarSomeStateIDs) Then
+    If lngarSomeStateIDs(LBound(lngarSomeStateIDs)) = intNull Then
+        lngarSomeStateIDs(LBound(lngarSomeStateIDs)) = lngNewStateID
+        Exit Function
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets index for new state ID based on accompanying element string
+'If adding duplicates is not permitted, and new item is a duplicate, does not add element to array
+lngIndexNew = HELPER_FindStateIDPlacementInEleOrderASCII(statearStates_REGEX, lngarSomeStateIDs, strNewEle, blUniqueIDs, lngNewStateID)
+'If invalid duplicate ID found, does not add to array
+If lngIndexNew = intInvalidDup Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Increases size of array
+ReDim Preserve lngarSomeStateIDs(UBound(lngarSomeStateIDs) + 1)
+'----------------------------------------------------------------------------------------------------------
+'All items that are at or beyond the new array are shifted right/up
+For lngIndex = (UBound(lngarSomeStateIDs) - 1) To lngIndexNew Step -1
+    lngarSomeStateIDs(lngIndex + 1) = lngarSomeStateIDs(lngIndex)
+Next lngIndex
+'----------------------------------------------------------------------------------------------------------
+'Places new state ID in array of state IDs
+lngarSomeStateIDs(lngIndexNew) = lngNewStateID
+'
+'
+End Function
+
+Private Function HELPER_FindStateIDPlacementInEleOrderASCII(statearStates_REGEX() As State, lngarSomeStateIDs() As Long, _
+strEle As String, Optional blUniqueIDs As Boolean = False, Optional lngID As Long = intNull, Optional lngIndexA As Long = intNull, Optional lngIndexB As Long = intNull) As Long
+'Gets placement (index) of state in list of state IDs (based on its value, and possibly also its index; assumes everything beyond new index will be shifted right/up)
+'Array of states is already in ASCII order by value
+'Do not give lngIndexA and lngIndexB unless it is known that given string will be placed in that range- those variables are for recursive purposes
+'Uses global state array
+'----------------------------------------------------------------------------------------------------------
+Dim blCheckBackward As Boolean, blCheckForward As Boolean
+Dim intAscComp As Integer, intLBound As Integer
+Dim lngIndexMiddle As Long, lngIndexReturn As Long, lngUBound As Long
+Dim strMiddle As String
+'----------------------------------------------------------------------------------------------------------
+'Value to return if invalid duplicate ID number is found
+Const intInvalidDup As Integer = -2
+'----------------------------------------------------------------------------------------------------------
+'Returns 0 if array not initialized
+If ArrayInitialized_1D(lngarSomeStateIDs) = False Then
+    lngIndexReturn = 0
+    Exit Function
+End If
+'
+'Gets upper and lower bounds
+intLBound = LBound(lngarSomeStateIDs)
+lngUBound = UBound(lngarSomeStateIDs)
+'----------------------------------------------------------------------------------------------------------
+'If either index not given, sets to LBound and UBound of given array
+If (lngIndexA = intNull) Or (lngIndexB = intNull) Then
+    lngIndexA = intLBound
+    lngIndexB = lngUBound
+End If
+'----------------------------------------------------------------------------------------------------------
+'If start and end indices are the same, finds placement
+If lngIndexA = lngIndexB Then
+    If CompareASCII(statearStates_REGEX(lngarSomeStateIDs(lngIndexA)).GetEle, strEle) = -1 Then
+        'String at index A/B is lower/earlier than string being placed- new index will be after this
+        lngIndexReturn = lngIndexA + 1
+        GoTo EXITFUNC
+    Else
+        'String at index A/B is higher/later than, or the same as, string being placed- this will be the new index
+        lngIndexReturn = lngIndexA
+        GoTo EXITFUNC
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'If start and end indices are adjacent, finds placement
+If lngIndexA = (lngIndexB - 1) Then
+    If strEle = statearStates_REGEX(lngarSomeStateIDs(lngIndexA)).GetEle Then
+        'Same string as index A, this is the correct index- returns value
+        lngIndexReturn = lngIndexA
+        GoTo EXITFUNC
+    End If
+    '
+    If CompareASCII(statearStates_REGEX(lngarSomeStateIDs(lngIndexA)).GetEle, strEle) = 1 Then
+        'String at index A is higher/later than string being placed- this will be the new index
+        lngIndexReturn = lngIndexA
+        GoTo EXITFUNC
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    If strEle = statearStates_REGEX(lngarSomeStateIDs(lngIndexB)).GetEle Then
+        'Same string as index B, this is the correct index- returns value
+        lngIndexReturn = lngIndexB
+        GoTo EXITFUNC
+    End If
+    '
+    If CompareASCII(statearStates_REGEX(lngarSomeStateIDs(lngIndexB)).GetEle, strEle) = 1 Then
+        'String at index B is higher/later than string being placed- this will be the new index
+        lngIndexReturn = lngIndexB
+        GoTo EXITFUNC
+    Else
+        'String at index B is lower/sooner than string being placed- next index will be the new index
+        lngIndexReturn = lngIndexB + 1
+        GoTo EXITFUNC
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets next index to check (exact middle, or else the floor)
+lngIndexMiddle = Int(lngIndexA + ((lngIndexB - lngIndexA) / 2))
+'Gets string at middle index
+strMiddle = statearStates_REGEX(lngarSomeStateIDs(lngIndexMiddle)).GetEle
+'----------------------------------------------------------------------------------------------------------
+If strEle = strMiddle Then
+    'Found correct placement for given string, returns value
+    lngIndexReturn = lngIndexMiddle
+    GoTo EXITFUNC
+Else
+    intAscComp = CompareASCII(strEle, strMiddle)
+    '
+    If intAscComp = 1 Then
+        'String should be later- looks above the current middle string
+        lngIndexReturn = HELPER_FindStateIDPlacementInEleOrderASCII(statearStates_REGEX, lngarSomeStateIDs, strEle, blUniqueIDs, _
+        lngID, (lngIndexMiddle + 1), lngIndexB)
+    ElseIf intAscComp = -1 Then
+        'String should be earlier- looks below the current middle string
+        lngIndexReturn = HELPER_FindStateIDPlacementInEleOrderASCII(statearStates_REGEX, lngarSomeStateIDs, strEle, blUniqueIDs, _
+        lngID, lngIndexA, (lngIndexMiddle - 1))
+    End If
+End If
+'
+'Returns placement index
+HELPER_FindStateIDPlacementInEleOrderASCII = lngIndexReturn
+Exit Function
+'
+'
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+EXITFUNC:
+'
+'If ID number given, finds specific placement amongst ID numbers with given element
+'Note:  at this point, return index can be anywhere from LBound to UBound + 1
+If lngID <> intNull Then
+    If lngIndexReturn > intLBound Then
+        'Return index not at lower bound, can look backwards
+        blCheckBackward = True
+    End If
+    If lngIndexReturn < (lngUBound + 1) Then
+        'Return index not above upper bound, can look forwards
+        blCheckForward = True
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    If blCheckBackward Then
+        'Decrements return index until A) at lower bound or B) previous ID has a different element or C) ID being placed is bigger than previous ID number
+        Do Until (lngIndexReturn = intLBound) _
+        Or (strEle <> statearStates_REGEX(lngarSomeStateIDs(lngIndexReturn - 1)).GetEle) _
+        Or (lngID > lngarSomeStateIDs(lngIndexReturn - 1))
+            lngIndexReturn = lngIndexReturn - 1
+        Loop
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    If blCheckForward Then
+        'Increments return index until A) at upper bound, B) current ID (which will be shoved right) has a different element, _
+        or C) ID being placed is smaller than current ID number (which will be shoved right)
+        Do Until (lngIndexReturn = lngUBound) _
+        Or (strEle <> statearStates_REGEX(lngarSomeStateIDs(lngIndexReturn)).GetEle) _
+        Or (lngID < lngarSomeStateIDs(lngIndexReturn))
+            lngIndexReturn = lngIndexReturn + 1
+        Loop
+        '
+        'If return index is at upper bound, checks whether it needs to be upper bound + 1
+        If lngIndexReturn = lngUBound Then
+            If (strEle = statearStates_REGEX(lngarSomeStateIDs(lngUBound)).GetEle) _
+            And (lngID > lngarSomeStateIDs(lngUBound)) Then
+                lngIndexReturn = lngIndexReturn + 1
+            End If
+        End If
+    End If
+End If 'lngID <> intNull
+'----------------------------------------------------------------------------------------------------------
+'If duplicates ID numbers are invalid, checks whether duplicate
+If blUniqueIDs Then
+    'If item at return index has the same state ID, it's a duplicate
+    If lngIndexReturn <= lngUBound Then
+        If lngID = lngarSomeStateIDs(lngIndexReturn) Then
+            lngIndexReturn = intInvalidDup
+            HELPER_FindStateIDPlacementInEleOrderASCII = lngIndexReturn
+            Exit Function
+        End If
+    End If
+    '
+    'If item at previous index (return index - 1) has the same state ID, it's a duplicate
+    If lngIndexReturn > intLBound Then
+        If lngID = lngarSomeStateIDs(lngIndexReturn - 1) Then
+            lngIndexReturn = intInvalidDup
+            HELPER_FindStateIDPlacementInEleOrderASCII = lngIndexReturn
+            Exit Function
+        End If
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'Returns final placement index
+HELPER_FindStateIDPlacementInEleOrderASCII = lngIndexReturn
+'
+'
+End Function
+
+Private Function PREP_A_SetConstants()
+'Sets constants (that cannot be set in global variable area)
+'Note:  anchors are only here as their escaped versions- they get their own nodes and rules in the NFA
+'Note:  error string only here as escaped version (just in case user wants to put in error string)
+'----------------------------------------------------------------------------------------------------------
+'Regex metachar
+'Single-element operators, discarded during the conversion to postfix notation
+'(the single-element operators are in order of precedence)
+strarMetachar_REGEX(0) = "("
+strarMetachar_REGEX(1) = ")"
+'Single-element operators (which are not part of matching sets)
+'(the single-element operators are in order of precedence)
+strarMetachar_REGEX(2) = "|" 'or
+strarMetachar_REGEX(3) = strConcat_REGEX 'concat
+strarMetachar_REGEX(4) = "?" '0-1 instances of preceding element; equivalent to {0,1}
+strarMetachar_REGEX(5) = "*" '0+ instances of preceding element; equivalent to {0,}
+strarMetachar_REGEX(6) = "+" '1+ occurences of preceding element; equivalent to {1,}
+'Single-element operators (which are part of matching sets)
+strarMetachar_REGEX(7) = "[" 'start of char class
+strarMetachar_REGEX(8) = "]" 'end of char class
+strarMetachar_REGEX(9) = "{" 'start of operator indicating number of preceding element
+strarMetachar_REGEX(10) = "}" 'start of operator indicating number of preceding element
+'Any char except a new line
+strarMetachar_REGEX(11) = "."
+'2-char metachar (represent single literal char)
+strarMetachar_REGEX(12) = "\d" 'digit; equivalent to [0-9]
+strarMetachar_REGEX(13) = "\D" 'non-digit
+strarMetachar_REGEX(14) = "\s" 'whitespace (space, newline, tab)
+strarMetachar_REGEX(15) = "\S" 'non-whitespace
+strarMetachar_REGEX(16) = "\w" '"a-z", "A-Z", "_"
+strarMetachar_REGEX(17) = "\W" 'not "a-z", "A-Z", "_"
+'2+-char metachar that represent escaped metachar (represent single literal char)
+strarMetachar_REGEX(18) = "\|"
+strarMetachar_REGEX(19) = "\("
+strarMetachar_REGEX(20) = "\)"
+strarMetachar_REGEX(21) = "\?"
+strarMetachar_REGEX(22) = "\*"
+strarMetachar_REGEX(23) = "\+"
+strarMetachar_REGEX(24) = "\."
+strarMetachar_REGEX(25) = "\["
+strarMetachar_REGEX(26) = "\]"
+strarMetachar_REGEX(27) = "\{"
+strarMetachar_REGEX(28) = "\}"
+strarMetachar_REGEX(29) = "\\"
+    'these (below) are treated specially when encountered in non-escaped form, but aren't in this array as non-escaped form
+strarMetachar_REGEX(30) = "\^"
+strarMetachar_REGEX(31) = "\$"
+'2+-char metachar that represent escaped metachar that will end up representing more than 1 char in search string
+'Note:  this must not include any parts of operators
+strarMetachar_REGEX(32) = "\\d"
+strarMetachar_REGEX(33) = "\\D"
+strarMetachar_REGEX(34) = "\\s"
+strarMetachar_REGEX(35) = "\\S"
+strarMetachar_REGEX(36) = "\\w"
+strarMetachar_REGEX(37) = "\\W"
+'
+'
+End Function
+
+Private Function PREP_B_RegexToPostfixArray(ByVal strRegex As String) As String()
+'Converts regex string to array of regex elements in postfix order
+'Uses a version of the shunting yard algorithm
+'----------------------------------------------------------------------------------------------------------
+Dim blOperator As Boolean, blStop As Boolean
+Dim intPrecCurr As Integer
+Dim lngIndex As Long, lngMetaIndex As Long, lngOutIndex As Long
+Dim strarEmpty() As String, strarError(0) As String, strarInput() As String, strarOpStack() As String, strarOutput() As String
+Dim strEle As String, strEleStackTop As String
+'----------------------------------------------------------------------------------------------------------
+'Default return value = 1-element array containing only an error string
+strarError(0) = strMetaError_REGEX
+PREP_B_RegexToPostfixArray = strarError
+'Error handling
+On Error GoTo ERROR
+'----------------------------------------------------------------------------------------------------------
+'If input is empty string, returns empty array
+If strRegex = "" Then
+    PREP_B_RegexToPostfixArray = strarEmpty
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Converts string to array of elements (literal char and metachar)
+'things inside [] and {} are treated like a single element together
+'(, ), and things inside them treated like single char
+strarInput = PREP_RegexToArray(strRegex)
+'Returns error array if error
+If strarInput(0) = strMetaError_REGEX Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Shunting yard algorithm
+    'input array = strarInput
+    'output array = strarOutput
+    'operator stack = strarOpStack
+'
+'Output index starts at -1 because it will be incremented before each use
+lngOutIndex = -1
+'Gives stack an empty item (considered empty)
+ReDim strarOpStack(0)
+'
+For lngIndex = LBound(strarInput) To UBound(strarInput)
+    'Gets current element
+    strEle = strarInput(lngIndex)
+    '
+    If strEle = "(" Then
+        '"(":  puts on top of operator stack
+        StackPush_Str strarOpStack, strEle
+    ElseIf strEle = ")" Then
+        'Until the top of the operator stack is "(", or the stack is empty, moves elements from operator stack to output array
+        blStop = False
+        Do Until blStop Or (StackCount(strarOpStack) = 0)
+            If strarOpStack(UBound(strarOpStack)) = "(" Then
+                '"(" found, can stop moving elements from operator stack to output array
+                blStop = True
+            Else
+                'Removes element at top of operator stack
+                strEleStackTop = StackPop_Str(strarOpStack)
+                '
+                If strEleStackTop = ")" Then
+                    'Another ")" found before "(", error
+                    Exit Function
+                Else
+                    'Adds element to output
+                    lngOutIndex = lngOutIndex + 1
+                    ReDim Preserve strarOutput(lngOutIndex)
+                    strarOutput(lngOutIndex) = strEleStackTop
+                End If
+            End If
+        Loop
+        '
+        If StackCount(strarOpStack) = 0 Then
+            '"(" never found, error
+            Exit Function
+        Else
+            'Gets rid of "(" at top of stack without adding it to output
+            'Note:  does not add ")", no parentheses in postfix notation
+            StackPop_Str strarOpStack
+        End If
+    Else
+        'Determines whether operator (default = false; default precedence = lower than the lowest)
+        blOperator = False
+        intPrecCurr = -1
+        '
+        If (Left(strEle, 1) = "{") And (Right(strEle, 1) = "}") Then
+            'This is a {} operator, a quantifier
+            blOperator = True
+            intPrecCurr = intPrec_Quant
+        Else
+            'Checks whether it's one of the known single char operators (checks relevant indices of strarMetachar_REGEX)
+            lngMetaIndex = intMetaCharFirstOpPrecIndex
+            Do Until (blOperator = True) Or (lngMetaIndex > intMetaCharLastOpPrecIndex)
+                If strEle = strarMetachar_REGEX(lngMetaIndex) Then
+                    'This is a single char operator
+                    blOperator = True
+                    intPrecCurr = lngMetaIndex
+                End If
+                lngMetaIndex = lngMetaIndex + 1
+            Loop
+        End If
+        '----------------------------------------------------------------------------------------------------------
+        If blOperator Then
+            'Current element is operator (other than "(" or ")")
+            '
+            If StackCount(strarOpStack) > 0 Then
+                '1+ items in operator stack, gets operator at top of operator stack
+                strEleStackTop = strarOpStack(UBound(strarOpStack))
+                '
+                If strEleStackTop = "(" Then
+                    'Top of stack has "(":  puts element on top of operator stack
+                    StackPush_Str strarOpStack, strEle
+                ElseIf strEleStackTop <> "" Then
+                    'Pops off elements from operator stack and appends to output array until:
+                    'current element has the greater precedence OR stack is empty
+                    Do Until PREP_OpPrecRegexPostfix(strEle, strEleStackTop, intPrecCurr) = True Or (StackCount(strarOpStack) = 0)
+                        strEleStackTop = StackPop_Str(strarOpStack)
+                        '
+                        lngOutIndex = lngOutIndex + 1
+                        ReDim Preserve strarOutput(lngOutIndex)
+                        strarOutput(lngOutIndex) = strEleStackTop
+                        '
+                        'Peeks at next stack element
+                        If StackCount(strarOpStack) > 0 Then
+                            strEleStackTop = strarOpStack(UBound(strarOpStack))
+                        Else
+                            strEleStackTop = ""
+                        End If
+                    Loop
+                    '
+                    'Current operator now has greater precedence  (compared to top of stack):  puts on top of operator stack
+                    StackPush_Str strarOpStack, strEle
+                End If
+            Else
+                'Empty stack, pushes current operator to the top
+                StackPush_Str strarOpStack, strEle
+            End If 'StackCount(strarOpStack) > 0
+        Else
+            'Anything else:  appends to output array
+            lngOutIndex = lngOutIndex + 1
+            ReDim Preserve strarOutput(lngOutIndex)
+            strarOutput(lngOutIndex) = strEle
+        End If 'blOperator
+    End If
+Next lngIndex
+'
+'If anything left in operator stack at the end (other than ()), pops off each element and appends to output
+If StackCount(strarOpStack) > 0 Then
+    Do Until StackCount(strarOpStack) = 0
+        strEleStackTop = StackPop_Str(strarOpStack)
+        '
+        If (strEleStackTop = "(") Or (strEleStackTop = ")") Then
+            '() should never be left in operator stack at this point- error
+            GoTo ERROR
+        Else
+            'Valid operator to add to end
+            lngOutIndex = lngOutIndex + 1
+            ReDim Preserve strarOutput(lngOutIndex)
+            strarOutput(lngOutIndex) = strEleStackTop
+        End If
+    Loop
+End If
+'----------------------------------------------------------------------------------------------------------
+'Returns output array
+PREP_B_RegexToPostfixArray = strarOutput
+Exit Function
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'Error handler
+ERROR:
+PREP_B_RegexToPostfixArray = strarError
+'
+'
+End Function
+
+Private Function PREP_OpPrecRegexPostfix(strEleA As String, strEleB As String, _
+Optional intMetaIndexA As Integer = intNull, Optional intMetaIndexB As Integer = intNull) As Boolean
+'Compares two regex operators
+    'returns true if the first has HIGHER precedence (for postfix notation)
+    'returns false if the first has LOWER OR EQUAL precedence
+'If indices are given instead, uses these for comparison instead of strings
+'Precedence determined by placement in metachar array and constants for precedence categories
+    'also handles empty strings (given a lower priority than any of the metachar)
+'Assumes that things surrounded by {} are valid operators
+'----------------------------------------------------------------------------------------------------------
+Dim blEleFound As Boolean
+Dim intIndex As Integer, intPrecA As Integer, intPrecB As Integer
+'----------------------------------------------------------------------------------------------------------
+'Determines index in array of metachar for element A
+If intMetaIndexA <> intNull Then
+    'Valid integer given
+    intPrecA = intMetaIndexA
+ElseIf strEleA = "" Then
+    'No operator
+    intPrecA = intPrec_Empty
+Else
+    'Operator, but no valid integer given- determines category
+    '
+    If (Left(strEleA, 1) = "{") And (Right(strEleA, 1) = "}") Then
+        'This is a {} operator (a quantifier)
+        intPrecA = intPrec_Quant
+    Else
+        'Different operator, gets index
+        blEleFound = False
+        For intIndex = intMetaCharFirstOpPrecIndex To intMetaCharLastOpPrecIndex
+            If strEleA = strarMetachar_REGEX(intIndex) Then
+                intPrecA = intIndex
+                blEleFound = True
+                Exit For
+            End If
+        Next intIndex
+    End If
+End If
+'
+'Gets precedence category for element A
+Select Case intPrecA
+    Case Is >= intPrec_Quant
+        'Quantifier, highest priority
+        intPrecA = intPrec_Quant
+    Case Is >= intPrec_Concat
+        'Concatenation
+        intPrecA = intPrec_Concat
+    Case Is >= intPrec_Disjunct
+        'Exclusive disjunction
+        intPrecA = intPrec_Disjunct
+    Case Is >= intPrec_Paren
+        'Parenthesis, lowest operator priority
+        intPrecA = intPrec_Paren
+    Case Is >= intPrec_Empty
+        'Empty, lowest priority of all
+        intPrecA = intPrec_Empty
+End Select
+'----------------------------------------------------------------------------------------------------------
+'Determines index in array of metachar for element B
+If intMetaIndexB <> intNull Then
+    'Valid integer given
+    intPrecB = intMetaIndexB
+ElseIf strEleB = "" Then
+    'No operator
+    intPrecB = intPrec_Empty
+Else
+    'Operator, but no valid integer given
+    '
+    If (Left(strEleB, 1) = "{") And (Right(strEleB, 1) = "}") Then
+        'This is a {} operator (a quantifier)
+        intPrecB = intPrec_Quant
+    Else
+        'Different operator, gets index
+        blEleFound = False
+        For intIndex = intMetaCharFirstOpPrecIndex To intMetaCharLastOpPrecIndex
+            If strEleB = strarMetachar_REGEX(intIndex) Then
+                intPrecB = intIndex
+                blEleFound = True
+                Exit For
+            End If
+        Next intIndex
+    End If
+End If
+'
+'Gets precedence category for element B
+Select Case intPrecB
+    Case Is >= intPrec_Quant
+        'Quantifier, highest priority
+        intPrecB = intPrec_Quant
+    Case Is >= intPrec_Concat
+        'Concatenation, second highest priority
+        intPrecB = intPrec_Concat
+    Case Is >= intPrec_Disjunct
+        'Exclusive disjunction, third highest priority
+        intPrecB = intPrec_Disjunct
+    Case Is >= intPrec_Paren
+        'Parenthesis, lowest operator priority
+        intPrecB = intPrec_Paren
+    Case Is >= intPrec_Empty
+        'Empty, lowest priority of all
+        intPrecB = intPrec_Empty
+End Select
+'----------------------------------------------------------------------------------------------------------
+'If first element has a higher precedence (higher number), returns true- otherwise, returns false by default
+If intPrecA > intPrecB Then
+    PREP_OpPrecRegexPostfix = True
+End If
+'
+'
+End Function
+
+Private Function PREP_RegexCharClassValid(ByVal strEle As String) As Boolean
+'Checks whether an input with square brackets ([]) on the outside (and ONLY the outside) is a valid regex character class
+    'Note:  this function assumes that there are square brackets on the outside
+'Valid format:
+    'No longer than intCharLimit
+    '[] with any number of literal char inside (except whitespace)
+    '"-" in [] is a metachar that indicates that the char on either side are part of a range, and this range must be in ASCII order
+'Valid examples:
+    '[a]
+    '[abcw7]
+    '[aqf]
+    '[a-z1-7]
+    '[a-z1-7bfw]
+    '[^a-z1-7bfw]
+    '[^aqf]
+'Invalid examples:
+    '[]
+    '[-]
+    '[-h]
+    '[z-a]
+'Note:  no metachar permitted inside a character class; use | to get an equivalent expression
+    'e.g., [\da-z] => (\d|[a-z])
+    'e.g., [(a-d)|(x-z)] => ([a-d]|[x-z])
+    'e.g., [ae+]* => ([ae]|\+)*  (in this example, assumed that "+" was meant to be literal)
+'Note:  "-" must only be used as a metachar within a character class; use | to get equivalent expression if "-" is a possible literal choice
+'----------------------------------------------------------------------------------------------------------
+Dim intDashIndex As Integer, intIndex As Integer, intLen As Integer
+Dim strChar As String
+'----------------------------------------------------------------------------------------------------------
+'Char limit- enough to include every non-whitespace char in this format:  A-BB-CC-D, plus a little extra space
+Const intCharLimit As Integer = 710
+'----------------------------------------------------------------------------------------------------------
+'Returns false if error
+On Error GoTo ExitFunct
+'----------------------------------------------------------------------------------------------------------
+'Gets length of element being evaluated
+intLen = Len(strEle)
+'----------------------------------------------------------------------------------------------------------
+'If nothing inside square brackets, returns false
+If strEle = "[]" Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'If too many char, returns false
+If intLen > intCharLimit Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'If any whitespace char other than simple space (" "), returns false
+For intIndex = 1 To intLen
+    'Gets current char
+    strChar = Mid(strEle, intIndex, 1)
+    '
+    If strChar = " " Then
+        'Simple space- no action required
+    Else
+        If IsCharWhitespace(strChar) Then
+            'Other, invalid whitespace- returns false
+            Exit Function
+        End If
+    End If
+Next intIndex
+'----------------------------------------------------------------------------------------------------------
+'Determines whether ranges (char surrounding -) are valid- if not, returns false
+'Note- can stop when intIndex = intLen because the last char is known to be "]"
+intIndex = 1
+Do While intIndex < intLen
+    'Finds next dash, if any
+    intDashIndex = InStr(intIndex, strEle, "-")
+    '
+    'Exits loop if no (more) dashes; advances to point in string where loop will stop
+    If intDashIndex < 1 Then
+        intIndex = intLen
+    Else
+        'At least one more dash
+        '
+        'If a dash found directly after current dash, returns false
+        If Mid(strEle, intDashIndex + 1, 1) = "-" Then
+            Exit Function
+        End If
+        '
+        'If char on either side of the dash are not in ASCII order (first one should be lower ASCII number), returns false
+        If (Asc(Mid(strEle, intDashIndex - 1, 1))) > (Asc(Mid(strEle, intDashIndex + 1, 1))) Then
+            Exit Function
+        End If
+        '
+        'Advances to next index (after the char that's after the dash)
+        intIndex = intDashIndex + 2
+    End If 'intDashIndex < 1
+Loop
+'----------------------------------------------------------------------------------------------------------
+'If this point is reached without error (and without skipping), returns true
+PREP_RegexCharClassValid = True
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'Skips here if error, returns false
+ExitFunct:
+'
+'
+End Function
+
+Private Function PREP_RegexQuantifierValid(ByVal strEle As String) As Boolean
+'Checks whether an input with curly brackets ({}) on the outside (and ONLY the outside) is a valid regex quantifier
+    'Note:  this function assumes that there are curly brackets on the outside
+'Must be one of these formats, where # stands for a non-negative integer, and P stands for positive integer (spaces are NOT allowed):
+    '{P}
+    '{P,}
+    '{,P}
+    '{#,P}
+'----------------------------------------------------------------------------------------------------------
+Dim intCommaPos As Integer, intLen As Integer
+Dim strarComma() As String
+'----------------------------------------------------------------------------------------------------------
+'Returns false if error
+On Error GoTo ExitFunct
+'----------------------------------------------------------------------------------------------------------
+'If nothing inside curly brackets, returns false
+If strEle = "{}" Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Removes curly brackets (assumed to have {} on the outside, that's how it was found)
+strEle = Left(strEle, (Len(strEle) - 1))
+strEle = Right(strEle, (Len(strEle) - 1))
+'----------------------------------------------------------------------------------------------------------
+'Gets comma position and length of given element (without brackets)
+intCommaPos = InStr(strEle, ",")
+intLen = Len(strEle)
+'----------------------------------------------------------------------------------------------------------
+If intCommaPos > 0 Then
+    'At least one comma:  might be "m,", ",n", or "m,n"
+    '
+    'If more than one comma, quits
+    If intLen > intCommaPos Then
+        If InStr((intCommaPos + 1), strEle, ",") > 0 Then
+            Exit Function
+        End If
+    End If
+    '
+    If Right(strEle, 1) = "," Then
+        'Last char is comma- might be "m,"
+        '
+        'Removes comma from the end
+        strEle = Left(strEle, intLen - 1)
+        '
+        'If string is NOT a positive integer, returns false
+        If IsStringPosInteger(strEle) = False Then
+            Exit Function
+        End If
+    ElseIf Left(strEle, 1) = "," Then
+        'Starts with comma- might be ",n"
+        '
+        'Removes comma from the start
+        strEle = Right(strEle, intLen - 1)
+        '
+        'If string is NOT a positive integer, returns false
+        If IsStringPosInteger(strEle) = False Then
+            Exit Function
+        End If
+    Else
+        'Might be "m,n"
+        '
+        'Splits by comma
+        strarComma = Split(strEle, ",")
+        'If wrong number of items found, returns false
+        If UBound(strarComma) <> 1 Then
+            Exit Function
+        End If
+        'If strings are NOT a non-negative integer and a positive integer, returns false
+        If IsStringNonNegInteger(strarComma(0)) = False Then
+            Exit Function
+        End If
+        If IsStringPosInteger(strarComma(1)) = False Then
+            Exit Function
+        End If
+    End If
+Else
+    'No commas- might be "m"
+    '
+    'If string is NOT a positive integer, returns false
+    If IsStringPosInteger(strEle) = False Then
+        Exit Function
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'If this point is reached without error (and without skipping), returns true
+PREP_RegexQuantifierValid = True
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'Skips here if error, returns false
+ExitFunct:
+'
+'
+End Function
+
+Private Function PREP_RegexToArray(ByVal strRegex As String) As String()
+'Converts regular expression string to array (separates by element- recognizes that "a", "\d", and "[A-BD-F]" are each elements)
+'Adds concatenation element (implicit in regular expressions) between prev and current element if:
+    'Current element IS NOT:
+        'the first element
+        ')
+        '$
+        'any operator, including {}
+    'Previous element is NOT
+        '|
+        '(
+        '^
+'----------------------------------------------------------------------------------------------------------
+Dim blConcat As Boolean, blPrevDoesNotWantConcat As Boolean
+Dim intLenMulti As Integer, intMetaIndex As Integer
+Dim lngEleIndex As Long, lngLenRegex As Long, lngRegexIndex As Long, lngRegexIndex2 As Long
+Dim strarElements() As String, strarError(0) As String
+Dim strChar As String, strEle As String, strEndAnch As String, strFrontAnch As String, strMainEle As String, strMulti As String
+'----------------------------------------------------------------------------------------------------------
+'Default return value = 1-element array containing only an error string
+strarError(0) = strMetaError_REGEX
+PREP_RegexToArray = strarError
+'Error handling
+On Error GoTo ERROR
+'----------------------------------------------------------------------------------------------------------
+'Gets length of given string
+lngLenRegex = Len(strRegex)
+'----------------------------------------------------------------------------------------------------------
+'Converts string to array of subparts
+'
+'Starts at first char in search string
+lngRegexIndex = 1
+'Element index starts at -1 because it will be incremented before each use
+lngEleIndex = -1
+Do While lngRegexIndex <= lngLenRegex
+    'Gets current char
+    strChar = Mid(strRegex, lngRegexIndex, 1)
+    '----------------------------------------------------------------------------------------------------------
+    'Determines whether possible to concatenate with previous element
+    '
+    'Determines whether most recent element (if any) is "|" or "("
+    'note:  allowing concatenation with anchors- anchors are technically operators, but they're treated like single char metachar
+    blPrevDoesNotWantConcat = False
+    If ArrayInitialized_1D(strarElements) Then
+        If (strarElements(lngEleIndex) = "|") Or (strarElements(lngEleIndex) = "(") Then
+            blPrevDoesNotWantConcat = True
+        End If
+    End If
+    '
+    If (lngRegexIndex = 1) Or blPrevDoesNotWantConcat Then
+        'Will not be concatenating with previous element
+        blConcat = False
+    Else
+        'Might be concatenating with previous element (default = true in this situation)
+        blConcat = True
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    'Determines whether char is literal or metachar (if latter, determines what is part of that element)
+    If strChar = "[" Then
+        'Searches for accompanying "]"
+        lngRegexIndex2 = lngRegexIndex
+        Do Until Mid(strRegex, lngRegexIndex2, 1) = "]" _
+        Or (lngRegexIndex2 > lngLenRegex)
+            lngRegexIndex2 = lngRegexIndex2 + 1
+        Loop
+        '
+        If lngRegexIndex2 > lngLenRegex Then
+            'No match found- treats as a literal "["
+            strMainEle = strChar
+            'Advances to next index of original string
+            lngRegexIndex = lngRegexIndex + 1
+        Else
+            'Match found- gets string and checks validity
+            strEle = Mid(strRegex, lngRegexIndex, (lngRegexIndex2 - lngRegexIndex + 1))
+            '
+            If PREP_RegexCharClassValid(strEle) Then
+                'Valid char class
+                strMainEle = strEle
+                'Advances to next index of search string
+                lngRegexIndex = lngRegexIndex + Len(strEle)
+            Else
+                'Invalid, quits (returns only the error array)
+                Exit Function
+            End If
+        End If
+    ElseIf strChar = "{" Then
+        'Searches for accompanying "}"
+        lngRegexIndex2 = lngRegexIndex
+        Do Until Mid(strRegex, lngRegexIndex2, 1) = "}" _
+        Or (lngRegexIndex2 > lngLenRegex)
+            lngRegexIndex2 = lngRegexIndex2 + 1
+        Loop
+        '
+        If lngRegexIndex2 > lngLenRegex Then
+            'No match found- treats as a literal "{"
+            strMainEle = strChar
+            'Advances to next index of original string
+            lngRegexIndex = lngRegexIndex + 1
+        Else
+            'Match found- gets string and checks validity
+            strEle = Mid(strRegex, lngRegexIndex, (lngRegexIndex2 - lngRegexIndex + 1))
+            '
+            If PREP_RegexQuantifierValid(strEle) Then
+                'Valid, adds quantifier to array of elements (will NOT concatenate with previous element)
+                blConcat = False
+                strMainEle = strEle
+                '
+                'Advances to next index of search string
+                lngRegexIndex = lngRegexIndex + Len(strEle)
+            Else
+                'Invalid, quits (returns only the error array)
+                Exit Function
+            End If
+        End If
+    ElseIf strChar = "\" Then
+        'Might be a metachar starting with a backslash- searches through possible matches
+        intMetaIndex = intMetaCharFirstBackslashIndex
+        Do Until Mid(strRegex, lngRegexIndex, Len(strarMetachar_REGEX(intMetaIndex))) = strarMetachar_REGEX(intMetaIndex) _
+        Or (intMetaIndex = intMetaCharLastBackslashIndex)
+            intMetaIndex = intMetaIndex + 1
+        Loop
+        'If index reached the end of range, determines whether match
+        If intMetaIndex = intMetaCharLastBackslashIndex Then
+            If Mid(strRegex, lngRegexIndex, Len(strarMetachar_REGEX(intMetaIndex))) <> strarMetachar_REGEX(intMetaIndex) Then
+                'Not a match, increments index beyond limit
+                intMetaIndex = intMetaIndex + 1
+            End If
+        End If
+        '
+        If intMetaIndex > intMetaCharLastBackslashIndex Then
+            'No match found- treats like a literal "\"
+            strMainEle = strChar
+            '
+            'Advances to next index of original string
+            lngRegexIndex = lngRegexIndex + 1
+        ElseIf (intMetaIndex >= intMetaCharFirstBackslashMultiIndex) And (intMetaIndex <= intMetaCharLastBackslashMultiIndex) Then
+            'Match found- escaped metachar that represents more than 1 char (has no operators)- removes first backslash and treats like multiple literal char (e.g., "\\d" => "\", "d")
+            '
+            'Gets full string for this metachar
+            strMulti = strarMetachar_REGEX(intMetaIndex)
+            'Gets length of metachar
+            intLenMulti = Len(strMulti)
+            '
+            'For each char, adds as a literal (with concat in between)
+            'Starts after first one, to remove the first backslash
+            'Doesn't get the last one in this loop, gets it shortly after
+            For lngRegexIndex2 = 2 To (intLenMulti - 1)
+                'Concatenates (with previous element) if permitted
+                If blConcat Then
+                    lngEleIndex = lngEleIndex + 1
+                    ReDim Preserve strarElements(lngEleIndex)
+                    strarElements(lngEleIndex) = strConcat_REGEX
+                End If
+                '
+                'Adds current element to array
+                lngEleIndex = lngEleIndex + 1
+                ReDim Preserve strarElements(lngEleIndex)
+                strarElements(lngEleIndex) = Mid(strMulti, lngRegexIndex2, 1)
+                'After first char in this set, definitely using concatenation
+                blConcat = True
+            Next lngRegexIndex2
+            '
+            'Gets the last element (will be added later, when other elements are usually added)
+            strMainEle = Mid(strMulti, intLenMulti, 1)
+            '
+            'Advances to next index of original string
+            lngRegexIndex = lngRegexIndex + Len(strarMetachar_REGEX(intMetaIndex))
+        Else
+            'Match found- represents single char in literal search string (may or may not represent an escaped metachar; e.g., "\?", "\d")
+            '
+            'Adds \ metachar to array of elements
+            strMainEle = strarMetachar_REGEX(intMetaIndex)
+            '
+            'Advances to next index of search string
+            lngRegexIndex = lngRegexIndex + Len(strarMetachar_REGEX(intMetaIndex))
+        End If 'intMetaIndex > intMetaCharLastBackslashIndex
+    Else
+        'Permitted single-char metachar or literal char (e.g., "(", ")", "?", "a", "^", "$")
+        'NOT {}, [], \(etc)
+        strEle = strChar
+        '
+        'Determines whether to concatenate
+        If blConcat Then
+            'Might concatenate, checks current element
+            If strEle = ")" Then
+                'Current char is ")", will not concatenate
+                blConcat = False
+            Else
+                'Determines whether current char is an non-parenthetical, single-char operator (multichar metachar already ruled out)- if so, will not concatenate
+                For intMetaIndex = intMetaCharFirstOpPrecNONParenIndex To intMetaCharLastOpPrecNONParenIndex
+                    If strEle = strarMetachar_REGEX(intMetaIndex) Then
+                        blConcat = False
+                        Exit For
+                    End If
+                Next intMetaIndex
+            End If
+        End If
+        '
+        'Gets element
+        strMainEle = strEle
+        '
+        'Advances to next index of search string
+        lngRegexIndex = lngRegexIndex + 1
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    '
+    'Concatenates (with previous element) if permitted
+    If blConcat Then
+        lngEleIndex = lngEleIndex + 1
+        ReDim Preserve strarElements(lngEleIndex)
+        strarElements(lngEleIndex) = strConcat_REGEX
+    End If
+    '
+    'Adds current element to array
+    lngEleIndex = lngEleIndex + 1
+    ReDim Preserve strarElements(lngEleIndex)
+    strarElements(lngEleIndex) = strMainEle
+SkipToNextChar:
+Loop
+'----------------------------------------------------------------------------------------------------------
+'If this point is reached without error, returns array
+PREP_RegexToArray = strarElements
+Exit Function
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'Error handler
+ERROR:
+PREP_RegexToArray = strarError
+'
+'
+End Function
+
+Private Function SEARCH_A_IsMatch(strSearch As String, blWholeStrOnly As Boolean, blCaseSensitive As Boolean) As Boolean
+'Returns whether search string is a match in the NFA made from the regular expression
+'If entire search string does not fit into NFA, checks substring from each index on (e.g., "bork", then "ork", then "rk", and finally "k")
+'----------------------------------------------------------------------------------------------------------
+Dim blFirstCharInSearch As Boolean, blResult As Boolean
+Dim lngIndex As Long, lngIndexMax As Long
+'----------------------------------------------------------------------------------------------------------
+If strSearch <> "" Then
+    'Non-empty search string
+    '
+    If blWholeStrOnly Then
+        'The only search starts with the first index
+        lngIndexMax = 1
+    Else
+        'Might start search from other indices, up until the end
+        lngIndexMax = Len(strSearch)
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    For lngIndex = 1 To lngIndexMax
+        'Determines whether current index is first char in search string
+        If lngIndex = 1 Then
+            blFirstCharInSearch = True
+        Else
+            blFirstCharInSearch = False
+        End If
+        '
+        'Determines whether the NFA is a match for the search string from current index onward
+        blResult = SEARCH_SubstringIsMatch(GetStrSect(strSearch, 1, True, , lngIndex), blFirstCharInSearch, blWholeStrOnly, blCaseSensitive)
+        If blResult = True Then
+            'Match found, returns true
+            SEARCH_A_IsMatch = True
+            Exit Function
+        End If
+    Next lngIndex
+Else
+    'Empty search string- will only be searching one substring, the empty substring
+    '
+    'Determines whether the NFA is a match for the (empty) search string
+    blResult = SEARCH_SubstringIsMatch(strSearch, blFirstCharInSearch, blWholeStrOnly, blCaseSensitive)
+    If blResult = True Then
+        'Match found, returns true
+        SEARCH_A_IsMatch = True
+        Exit Function
+    End If
+End If
+'
+'
+End Function
+
+Private Function SEARCH_GetNextStates(lngarStatesToSearch() As Long, lngarStatesWithValues() As Long, _
+strChar As String, blFirstCharInSearch As Boolean, blLastCharInSearch As Boolean, blWholeStrOnly As Boolean, blCaseSensitive As Boolean) As Long()
+'Gets next set of states that have non-empty string elements that match the current char in the search string
+'----------------------------------------------------------------------------------------------------------
+Dim lngarChildren() As Long, lngarChildrenOfState() As Long, lngarPartialMatch(0) As Long, lngarNewStatesToSearch() As Long
+Dim lngChildIndex As Long, lngChildOfStateIndex As Long, lngChildStateID As Long, lngHitCount As Long, _
+lngParentIndex As Long, lngParentStateID As Long, lngPassMax As Long, lngPassMin As Long
+Dim strEle As String
+'----------------------------------------------------------------------------------------------------------
+'Valid partial match return value for SEARCH_GetNextStates
+Const intPartialMatch As Integer = -2
+'Array to return if partial match is found (and partial matches are allowed)
+lngarPartialMatch(0) = intPartialMatch
+'----------------------------------------------------------------------------------------------------------
+'If no more states to search, returns array of states with values
+If ArrayInitialized_1D(lngarStatesToSearch) = False Then
+    SEARCH_GetNextStates = lngarStatesWithValues
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets array of children of given parent states
+For lngParentIndex = LBound(lngarStatesToSearch) To UBound(lngarStatesToSearch)
+    'Gets ID of current parent state
+    lngParentStateID = lngarStatesToSearch(lngParentIndex)
+    '
+    'Gets children of current parent state
+    lngarChildrenOfState = statearStates_REGEX(lngParentStateID).GetOutStates
+    '
+    If ArrayInitialized_1D(lngarChildrenOfState) Then
+        'Parent has 1+ children
+        '----------------------------------------------------------------------------------------------------------
+        'If quantifier, determines which children to check (based on attributes of parent)
+        lngPassMin = statearStates_REGEX(lngParentStateID).GetPassMin
+        lngHitCount = statearStates_REGEX(lngParentStateID).GetHitCount
+        '
+        If (lngPassMin > intNull) And (lngHitCount < lngPassMin) Then
+            'Parent is at end of loop; min number of loop iterations not yet reached, can only go back along loop
+            '
+            ReDim lngarChildrenOfState(0)
+            lngarChildrenOfState(0) = statearStates_REGEX(lngParentStateID).GetLoopStateID
+        End If '(lngPassMin > intNull) And (lngHitCount < lngPassMin)
+        '----------------------------------------------------------------------------------------------------------
+        'Adds children of current parent to list of all children to be checked
+        For lngChildOfStateIndex = LBound(lngarChildrenOfState) To UBound(lngarChildrenOfState)
+            'Gets ID of current child state
+            lngChildStateID = lngarChildrenOfState(lngChildOfStateIndex)
+            'Gets element value of current child state
+            strEle = statearStates_REGEX(lngChildStateID).GetEle
+            'Child added to array of child states being checked this round (if already in array, does not add)
+            HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarChildren, lngarChildrenOfState(lngChildOfStateIndex), strEle, , True
+        Next lngChildOfStateIndex
+    End If 'ArrayInitialized_1D(lngarChildrenOfState)
+Next lngParentIndex
+'----------------------------------------------------------------------------------------------------------
+'If no children, returns array of states with values
+If ArrayInitialized_1D(lngarChildren) = False Then
+    SEARCH_GetNextStates = lngarStatesWithValues
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'For all (valid) children of all given parents:  checks to determine if match, and/or if further searching is required
+'
+For lngChildIndex = LBound(lngarChildren) To UBound(lngarChildren)
+    'Gets ID of current child state
+    lngChildStateID = lngarChildren(lngChildIndex)
+    '
+    If statearStates_REGEX(lngChildStateID).GetClass = intMatch Then
+        'Match state found; if partial strings allowed, returns match value
+        If blWholeStrOnly = False Then
+            'If partial strings are allowed, immediately returns partial match array
+            SEARCH_GetNextStates = lngarPartialMatch
+            Exit Function
+        End If 'blWholeStrOnly = False
+    Else
+        'Not a match state
+        '
+        'Gets element value
+        strEle = statearStates_REGEX(lngChildStateID).GetEle
+        '
+        If strEle = "^" Then
+            'Front anchor- if first char of search string, continues the search; otherwise, done searching this route
+            If blFirstCharInSearch Then
+                'Continuing down this path, so increments hit count for state
+                'Note:  even though quantifier attributes might disqualify this state, must increment first in order to check hits against quantifier attributes
+                statearStates_REGEX(lngChildStateID).HitIncrement
+                '----------------------------------------------------------------------------------------------------------
+                'If quantifier, determines whether to continue
+                lngPassMax = statearStates_REGEX(lngChildStateID).GetPassMax
+                lngHitCount = statearStates_REGEX(lngChildStateID).GetHitCount
+                '
+                If (lngPassMax > intNull) And (lngHitCount > lngPassMax) Then
+                    'About to start a quantifier loop, but this iteration would be above the max number of iterations- stops searching down this route
+                    GoTo NextChild
+                End If
+                '----------------------------------------------------------------------------------------------------------
+                HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarNewStatesToSearch, lngChildStateID, strEle, , True
+            End If
+        ElseIf strEle = "$" Then
+            'End anchor- since this needs to be found AFTER the last char, this is always invalid at this stage; done searching this route
+        ElseIf strEle <> "" Then
+            'State has value (other than an anchor); if it matches current search char, and quantifier conditions don't disqualify it, adds to list of states with values to return
+            'If it doesn't match current search char, will stop searching down that route
+            '
+            If SEARCH_RegexEleMatchesChar(strEle, strChar, blCaseSensitive) Then
+                'State's element matches current search char
+                '
+                'Continuing down this path, so increments hit count for state
+                'Note:  even though quantifier attributes might disqualify this state, must increment first in order to check hits against quantifier attributes
+                statearStates_REGEX(lngChildStateID).HitIncrement
+                '----------------------------------------------------------------------------------------------------------
+                'If quantifier, determines whether to continue
+                lngPassMax = statearStates_REGEX(lngChildStateID).GetPassMax
+                lngHitCount = statearStates_REGEX(lngChildStateID).GetHitCount
+                '
+                If (lngPassMax > intNull) And (lngHitCount > lngPassMax) Then
+                    'About to start a quantifier loop, but this iteration would be above the max number of iterations- stops searching down this route
+                    GoTo NextChild
+                End If
+                '----------------------------------------------------------------------------------------------------------
+                'Adds state to (result) array of states with values
+                HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarStatesWithValues, lngChildStateID, strEle, , True
+            End If
+        Else
+            'Element has no value
+            '
+            'Continuing down this path, so increments hit count for state
+            'Note:  even though quantifier attributes might disqualify this state, must increment first in order to check hits against quantifier attributes
+            statearStates_REGEX(lngChildStateID).HitIncrement
+            '----------------------------------------------------------------------------------------------------------
+            'If quantifier, determines whether to continue
+            lngPassMax = statearStates_REGEX(lngChildStateID).GetPassMax
+            lngHitCount = statearStates_REGEX(lngChildStateID).GetHitCount
+            '
+            If (lngPassMax > intNull) And (lngHitCount > lngPassMax) Then
+                'About to start a quantifier loop, but this iteration would be above the max number of iterations- stops searching down this route
+                GoTo NextChild
+            End If
+            '----------------------------------------------------------------------------------------------------------
+            'State does not have a value- need to search its children, adds to array of states to search next round (if already in array, does not add)
+            HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarNewStatesToSearch, lngChildStateID, strEle, , True
+        End If
+    End If 'statearStates_REGEX(lngChildStateID).GetClass = intMatch
+NextChild:
+Next lngChildIndex
+'----------------------------------------------------------------------------------------------------------
+'Next round
+SEARCH_GetNextStates = SEARCH_GetNextStates(lngarNewStatesToSearch, lngarStatesWithValues, strChar, blFirstCharInSearch, blLastCharInSearch, blWholeStrOnly, blCaseSensitive)
+'
+'
+End Function
+
+Private Function SEARCH_HasMatchChild(lngarStatesToSearch() As Long, blLastCharInSearch As Boolean) As Boolean
+'Determines if any of the given set of states are connected to a match state (can be "" and "$" in the way)
+'----------------------------------------------------------------------------------------------------------
+Dim lngarChildren() As Long, lngarChildrenOfState() As Long, lngarNewStatesToSearch() As Long
+Dim lngChildIndex As Long, lngChildOfStateIndex As Long, lngChildStateID As Long, lngHitCount As Long, lngParentIndex As Long, _
+lngParentStateID As Long, lngPassMax As Long, lngPassMin As Long
+Dim strEle As String
+'----------------------------------------------------------------------------------------------------------
+'If no more states to search, returns false
+If ArrayInitialized_1D(lngarStatesToSearch) = False Then
+    SEARCH_HasMatchChild = False
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets array of child states
+For lngParentIndex = LBound(lngarStatesToSearch) To UBound(lngarStatesToSearch)
+    'Gets ID of current parent state to search
+    lngParentStateID = lngarStatesToSearch(lngParentIndex)
+    '
+    'Gets children of current parent state to search
+    lngarChildrenOfState = statearStates_REGEX(lngParentStateID).GetOutStates
+    '
+    If ArrayInitialized_1D(lngarChildrenOfState) Then
+        'At least one child
+        '
+        For lngChildOfStateIndex = LBound(lngarChildrenOfState) To UBound(lngarChildrenOfState)
+            'Gets ID of current child state
+            lngChildStateID = lngarChildrenOfState(lngChildOfStateIndex)
+            '----------------------------------------------------------------------------------------------------------
+            'If quantifier, determines whether to continue
+            '
+            'Gets pass min/max and hit count
+            lngPassMin = statearStates_REGEX(lngChildStateID).GetPassMin
+            lngPassMax = statearStates_REGEX(lngChildStateID).GetPassMax
+            lngHitCount = statearStates_REGEX(lngChildStateID).GetHitCount
+            '
+            If (lngPassMin > intNull) And (lngHitCount < (lngPassMin - 1)) Then
+                'Hasn't reached the min number of passes- stops searching down this route
+                'Note:  Since it's evaluating on the end of the NFA, which hasn't been incremented during this function, checks hit count against lngPassMin - 1
+                GoTo NextChildIndex
+            End If
+            If (lngPassMax > intNull) And (lngHitCount > lngPassMin) Then
+                'Exceeds the max number of passes- stops searching down this route
+                GoTo NextChildIndex
+            End If
+            '----------------------------------------------------------------------------------------------------------
+            'Child added to array of child states being searched this round (if already in array, does not add)
+            strEle = statearStates_REGEX(lngChildStateID).GetEle
+            HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarChildren, lngChildStateID, strEle, , True
+NextChildIndex:
+        Next lngChildOfStateIndex
+    End If
+Next lngParentIndex
+'----------------------------------------------------------------------------------------------------------
+'If no children, returns false
+If ArrayInitialized_1D(lngarChildren) = False Then
+    SEARCH_HasMatchChild = False
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Checks each child state
+For lngChildIndex = LBound(lngarChildren) To UBound(lngarChildren)
+    'Gets ID of current child state
+    lngChildStateID = lngarChildren(lngChildIndex)
+    '
+    If statearStates_REGEX(lngChildStateID).GetClass = intMatch Then
+        'Match state found- returns true
+        SEARCH_HasMatchChild = True
+        Exit Function
+    End If
+    '
+    'Gets element value
+    strEle = statearStates_REGEX(lngChildStateID).GetEle
+    '
+    If strEle = "$" Then
+        'End anchor
+        '
+        If blLastCharInSearch Then
+            'Last char in search string, valid placement of end anchor- continues search down this route
+            HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarNewStatesToSearch, lngChildStateID, strEle, , True
+        End If
+    ElseIf strEle = "" Then
+        'State does not have a value- might need to search its children, adds to lngarNewStatesToSearch (if already in array, does not add)
+        HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarNewStatesToSearch, lngChildStateID, strEle, , True
+    End If
+Next lngChildIndex
+'----------------------------------------------------------------------------------------------------------
+'Next round
+SEARCH_HasMatchChild = SEARCH_HasMatchChild(lngarNewStatesToSearch, blLastCharInSearch)
+'
+'
+End Function
+
+Private Function SEARCH_MatchesCharClass(strChar As String, ByVal strCharClass As String, blCaseSensitive As Boolean) As Boolean
+'Determines whether given char matches given char class ([] format)
+'Assumed to be a valid char class (following the rules of PREP_RegexCharClassValid()- any ranges are in ASCII order)
+'If empty string, returns false (cannot have an empty char class)
+'----------------------------------------------------------------------------------------------------------
+Dim blNegation As Boolean, blResult As Boolean
+Dim intAsc As Integer, intAsc_OppCase As Integer, intAscX As Integer, intAscY As Integer, intClassIndex As Integer, _
+intLenCharClass As Integer
+Dim strChar_OppCase As String, strCharX As String, strCharY As String
+'----------------------------------------------------------------------------------------------------------
+'If char is empty, no match
+If strChar = "" Then
+    SEARCH_MatchesCharClass = False
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Removes first and last char (brackets)
+'e.g., [a-z] => a-z
+strCharClass = Left(strCharClass, Len(strCharClass) - 1)
+strCharClass = Right(strCharClass, Len(strCharClass) - 1)
+'----------------------------------------------------------------------------------------------------------
+'Determines whether negation ("^" at front, next char not "-")
+If (InStr(strCharClass, "^") = 1) And (Mid(strCharClass, 2, 1) <> "-") Then
+    blNegation = True
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets length of char class string
+intLenCharClass = Len(strCharClass)
+'
+'Gets ASCII val of search char
+intAsc = Asc(strChar)
+'
+'Gets opposite-case version of search char
+strChar_OppCase = OppositeCase(strChar)
+'Gets ASCII val of opposite-case version of search char
+intAsc_OppCase = Asc(strChar_OppCase)
+'----------------------------------------------------------------------------------------------------------
+'Searches char class to determine if given char is a match
+intClassIndex = 1
+Do While intClassIndex <= intLenCharClass
+    'Gets current char in char class
+    strCharX = Mid(strCharClass, intClassIndex, 1)
+    'Resets optional char (for end of range)
+    strCharY = ""
+    '
+    If strChar = strCharX Then
+        'Match, returns true
+        blResult = True
+        GoTo MatchFound
+    ElseIf Mid(strCharClass, (intClassIndex + 1), 1) = "-" Then
+        'Next item is a dash- gets the range and checks whether current char is in that range
+        strCharY = Mid(strCharClass, (intClassIndex + 2), 1)
+        intAscX = Asc(strCharX)
+        intAscY = Asc(strCharY)
+        '
+        If (intAsc >= intAscX) And (intAsc <= intAscY) Then
+            'Match, returns true
+            blResult = True
+            GoTo MatchFound
+        Else
+            'No match
+            If blCaseSensitive Then
+                'Case sensitive search, advances to next index in char class (after X-Y)
+                intClassIndex = intClassIndex + 3
+            Else
+                'Not case sensitive, will advance after checking lowercase
+            End If
+        End If
+    Else
+        'No match
+        If blCaseSensitive Then
+            'Case sensitive search, advances to next index in char class
+            intClassIndex = intClassIndex + 1
+        Else
+            'Not case sensitive, will advance after checking lowercase
+        End If
+    End If
+    '
+    'If not case sensitive, checks whether opposite case is a match
+    If blCaseSensitive = False Then
+        If strChar_OppCase = strCharX Then
+            'Match, returns true
+            blResult = True
+            GoTo MatchFound
+        ElseIf strCharY <> "" Then
+            'Range- checks whether current char is in that range
+            If (intAsc_OppCase >= intAscX) And (intAsc_OppCase <= intAscY) Then
+                'Match, returns true
+                blResult = True
+                GoTo MatchFound
+            Else
+                'No match, advances to next index in char class (after X-Y)
+                intClassIndex = intClassIndex + 3
+            End If
+        Else
+            'No match, advances to next index in char class
+            intClassIndex = intClassIndex + 1
+        End If
+    End If 'blCaseSensitive = False
+Loop
+'----------------------------------------------------------------------------------------------------------
+'Skips to here if match found
+MatchFound:
+'
+'If negation, flips result boolean
+If blNegation Then
+    blResult = Not blResult
+End If
+'
+'Returns result
+SEARCH_MatchesCharClass = blResult
+'
+'
+End Function
+
+Private Function SEARCH_NullStringMatch(lngarStatesToSearch() As Long) As Boolean
+'Determines whether NFA is a match for a empty/null search string
+'----------------------------------------------------------------------------------------------------------
+Dim lngarChildren() As Long, lngarChildrenOfState() As Long, lngarNewStatesToSearch() As Long
+Dim lngChildIndex As Long, lngChildStateID As Long, lngParentIndex As Long, lngParentStateID As Long
+Dim strEle As String
+'----------------------------------------------------------------------------------------------------------
+'If no more states to search, returns false
+If ArrayInitialized_1D(lngarStatesToSearch) = False Then
+    SEARCH_NullStringMatch = False
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets array of child states
+For lngParentIndex = LBound(lngarStatesToSearch) To UBound(lngarStatesToSearch)
+    'Gets ID of current parent state to search
+    lngParentStateID = lngarStatesToSearch(lngParentIndex)
+    '
+    'Gets children of current parent state to search
+    lngarChildrenOfState = statearStates_REGEX(lngParentStateID).GetOutStates
+    '
+    If ArrayInitialized_1D(lngarChildrenOfState) Then
+        'At least one child- adds all children of current parent to list of states to be checked
+        For lngChildIndex = LBound(lngarChildrenOfState) To UBound(lngarChildrenOfState)
+            lngChildStateID = lngarChildrenOfState(lngChildIndex)
+            strEle = statearStates_REGEX(lngChildStateID).GetEle
+            HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarChildren, lngChildStateID, strEle, , True
+        Next lngChildIndex
+    End If
+Next lngParentIndex
+'----------------------------------------------------------------------------------------------------------
+'If no children to be checked, returns false
+If ArrayInitialized_1D(lngarChildren) = False Then
+    SEARCH_NullStringMatch = False
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Checks each child state
+For lngChildIndex = LBound(lngarChildren) To UBound(lngarChildren)
+    'Gets ID of current child state
+    lngChildStateID = lngarChildren(lngChildIndex)
+    '
+    If statearStates_REGEX(lngChildStateID).GetClass = intMatch Then
+        'Match state found- returns true
+        SEARCH_NullStringMatch = True
+        Exit Function
+    End If
+    '
+    'Gets element value
+    strEle = statearStates_REGEX(lngChildStateID).GetEle
+    '
+    If (strEle = "") Or (strEle = "^") Or (strEle = "$") Then
+        'State does not have a value (or is an anchor)- need to search its children, adds to lngarNewStatesToSearch (if already in array, does not add)
+        HELPER_AddStateIDToArrayInEleOrder statearStates_REGEX, lngarNewStatesToSearch, lngChildStateID, strEle, , True
+    End If
+Next lngChildIndex
+'----------------------------------------------------------------------------------------------------------
+'Next round
+SEARCH_NullStringMatch = SEARCH_NullStringMatch(lngarNewStatesToSearch)
+'
+'
+End Function
+
+Private Function SEARCH_RegexEleMatchesChar(ByVal strEle As String, ByVal strChar As String, blCaseSensitive As Boolean) As Boolean
+'Determines whether regex element matches literal char
+'----------------------------------------------------------------------------------------------------------
+'If exact, literal match, returns true
+If strChar = strEle Then
+    SEARCH_RegexEleMatchesChar = True
+    Exit Function
+End If
+'
+'If regex element is empty, returns false
+If strEle = "" Then
+    Exit Function
+End If
+'
+'If char is empty, returns false
+If strChar = "" Then
+    Exit Function
+End If
+'
+'If element is a wildcard, returns true (note:  "." cannot represent "")
+If strEle = "." Then
+    SEARCH_RegexEleMatchesChar = True
+    Exit Function
+End If
+'
+'If not case sensitive, and matches the opposite case, returns true
+If blCaseSensitive = False Then
+    If OppositeCase(strChar) = strEle Then
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+End If
+'
+'If element is a char class, and char belongs, returns true
+If InStr(strEle, "[") = 1 And InStr(strEle, "]") = Len(strEle) Then
+    If SEARCH_MatchesCharClass(strChar, strEle, blCaseSensitive) Then
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+End If
+'----------------------------------------------------------------------------------------------------------
+'If element does not start with "\", returns false (the only possible matches at this point are with metachar that start with "\")
+If InStr(strEle, "\") <> 1 Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Determines whether strEle is a metachar- if it is, determines whether it matches strChar
+'
+If strEle = "\w" Then
+    'Char must be alphabetical, numerical, or underscore to match
+    '
+    If strChar = "_" Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    ElseIf IsCharDigit(strChar) Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    ElseIf IsCharLetter(strChar) Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+ElseIf strEle = "\W" Then
+    'Char must NOT be alphabetical, numerical, or underscore to match
+    '
+    If (strChar <> "_") And (IsCharDigit(strChar) = False) And (IsCharLetter(strChar) = False) Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+ElseIf strEle = "\d" Then
+    'Char must be digit to match
+    '
+    If IsCharDigit(strChar) Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+ElseIf strEle = "\D" Then
+    'Char must be non-digit to match
+    '
+    If IsCharDigit(strChar) = False Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+ElseIf strEle = "\s" Then
+    'Char must be whitespace to match
+    '
+    If IsCharWhitespace(strChar) Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+ElseIf strEle = "\S" Then
+    'Char must be non-whitespace to match
+    '
+    If IsCharWhitespace(strChar) = False Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+Else
+    'Only possible match remaining are escaped metachar that start with "\" and represent a single literal char
+    '
+    'Gets element without starting "\"
+    strEle = Right(strEle, (Len(strEle) - 1))
+    '
+    If strEle = strChar Then
+        'Match found, returns true
+        SEARCH_RegexEleMatchesChar = True
+        Exit Function
+    End If
+End If
+'
+'
+End Function
+
+Private Function SEARCH_SubstringIsMatch(strSearchSubString As String, ByVal blFirstCharInSearch As Boolean, blWholeStrOnly As Boolean, blCaseSensitive As Boolean) As Boolean
+'Returns whether search string is a match in the NFA made from the regular expression
+'Uses a variation of BFS
+'Return values
+    'False = no match found
+    'True = match found
+'----------------------------------------------------------------------------------------------------------
+Dim blLastCharInSearch As Boolean, blResult As Boolean
+Dim lngarCurrStates() As Long, lngarEmpty() As Long
+Dim lngIndex As Long, lngSearchIndex As Long, lngSearchLen As Long
+Dim strChar As String
+'----------------------------------------------------------------------------------------------------------
+'Valid partial match return value for SEARCH_GetNextStates
+Const intPartialMatch As Integer = -2
+'----------------------------------------------------------------------------------------------------------
+'Default return value = not a match
+blResult = False
+On Error GoTo ErrorHandler
+'----------------------------------------------------------------------------------------------------------
+'Gets length of search string
+lngSearchLen = Len(strSearchSubString)
+'----------------------------------------------------------------------------------------------------------
+If lngSearchLen <> 0 Then
+    'Non-empty search string
+    '
+    'If substring not at the start of original search string, resets hit counts of all states
+    If blFirstCharInSearch = False Then
+        For lngIndex = LBound(statearStates_REGEX) To UBound(statearStates_REGEX)
+            statearStates_REGEX(lngIndex).HitReset
+        Next lngIndex
+    End If
+    '
+    'Starts at root of NFA
+    ReDim lngarCurrStates(0)
+    lngarCurrStates(0) = NFA_REGEX.GetStartStateID()
+    '
+    'While there are char left in search string:
+    For lngSearchIndex = 1 To lngSearchLen
+        'Gets current char in the search string
+        strChar = Mid(strSearchSubString, lngSearchIndex, 1)
+        '----------------------------------------------------------------------------------------------------------
+        'Determines whether first char in search string (not just the substring- if false at the start of this function, can never be true)
+        If blFirstCharInSearch Then
+            If lngSearchIndex = 1 Then
+                blFirstCharInSearch = True
+            Else
+                blFirstCharInSearch = False
+            End If
+        End If
+        '
+        'Determines whether last char in search string
+        If lngSearchIndex = lngSearchLen Then
+            blLastCharInSearch = True
+        Else
+            blLastCharInSearch = False
+        End If
+        '----------------------------------------------------------------------------------------------------------
+        'Gets next set of states to search (the next step along the NFA where all states have a non-empty, matching element)
+        ReDim lngarEmpty(0)
+        lngarEmpty(0) = intNull
+        lngarCurrStates = SEARCH_GetNextStates(lngarCurrStates, lngarEmpty, strChar, blFirstCharInSearch, blLastCharInSearch, blWholeStrOnly, blCaseSensitive)
+        '
+        'No match if no set of states to search
+        If ArrayInitialized_1D(lngarCurrStates) = False Then
+            SEARCH_SubstringIsMatch = False
+            Exit Function
+        End If
+        '
+        'No match if null (no matching states found)
+        If lngarCurrStates(0) = intNull Then
+            SEARCH_SubstringIsMatch = False
+            Exit Function
+        End If
+        '
+        'Match if marked as valid partial match
+        If lngarCurrStates(0) = intPartialMatch Then
+            SEARCH_SubstringIsMatch = True
+            Exit Function
+        End If
+        '
+        'Checks for match if a) not checking for entire search string, or b) it's the last char in search string
+        If (blWholeStrOnly = False) Or blLastCharInSearch Then
+            'Determines whether a match
+            If SEARCH_HasMatchChild(lngarCurrStates, blLastCharInSearch) Then
+                'Match = yes
+                SEARCH_SubstringIsMatch = True
+                Exit Function
+            Else
+                'Match = no
+                If blWholeStrOnly Then
+                    'This was the only chance to check- exits function
+                    SEARCH_SubstringIsMatch = False
+                    Exit Function
+                End If
+            End If 'SEARCH_HasMatchChild(lngarCurrStates, blLastCharInSearch)
+        End If '(blWholeStrOnly = False) Or blLastCharInSearch
+    Next lngSearchIndex
+Else
+    'Empty/null string
+    '
+    'Searches NFA, starting at the root
+    ReDim lngarCurrStates(0)
+    lngarCurrStates(0) = NFA_REGEX.GetStartStateID()
+    blResult = SEARCH_NullStringMatch(lngarCurrStates)
+End If 'lngSearchLen <> 0
+'----------------------------------------------------------------------------------------------------------
+'Returns final result
+SEARCH_SubstringIsMatch = blResult
+'
+'
+Exit Function
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'Exits function with default result if error
+ErrorHandler:
+SEARCH_SubstringIsMatch = blResult
+'
+'
+End Function
+
+Private Function StackCount(vararX As Variant) As Long
+'Returns number of items in stack (not counting the first item, LBound 0)
+'E.g., array from 0-5 will return 5 (has five "real" items, 1-5)
+'Assumes that stack has been initialized
+'----------------------------------------------------------------------------------------------------------
+StackCount = UBound(vararX)
+'
+End Function
+
+Private Function StackPop_NFA(NFAarX() As NFA) As NFA
+'Removes top (last) item of NFA stack (array) and returns it
+'----------------------------------------------------------------------------------------------------------
+Dim NFAlast As New NFA
+'----------------------------------------------------------------------------------------------------------
+'If stack functionally empty, does nothing, returns null
+If UBound(NFAarX) < 1 Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+Set NFAlast = NFAarX(UBound(NFAarX))
+ReDim Preserve NFAarX(UBound(NFAarX) - 1)
+'
+Set StackPop_NFA = NFAlast
+'
+End Function
+
+Private Function StackPop_Str(strarX() As String) As String
+'Removes top (last) item of string stack (array) and returns it
+'----------------------------------------------------------------------------------------------------------
+Dim strUBound As String
+'----------------------------------------------------------------------------------------------------------
+'If stack functionally empty, does nothing, returns empty string
+If UBound(strarX) < 1 Then
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+strUBound = strarX(UBound(strarX))
+ReDim Preserve strarX(UBound(strarX) - 1)
+'
+StackPop_Str = strUBound
+'
+End Function
+
+Private Function StackPush_NFA(NFAarX() As NFA, NFAPush As NFA)
+'Appends given string to top (end) of given stack (array)
+'----------------------------------------------------------------------------------------------------------
+ReDim Preserve NFAarX(UBound(NFAarX) + 1)
+Set NFAarX(UBound(NFAarX)) = NFAPush
+'
+End Function
+
+Private Function StackPush_Str(strarX() As String, strPush As String)
+'Appends given string to top (end) of given stack (array)
+'----------------------------------------------------------------------------------------------------------
+ReDim Preserve strarX(UBound(strarX) + 1)
+strarX(UBound(strarX)) = strPush
+'
+End Function
+
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'TOOLBOX FUNCTION(S) (PRIVATE)
+
+Private Function ArrayInitialized_1D(vararX As Variant) As Boolean
+'Author:  N. D. Stoneking
+'Determines whether a 1D array contains any elements
+    'Note:  does not look at the elements, elements may be empty, but if this returns true, they exist
+    'Note:  does not have to be a variant array
+'Return value
+    'True = has a lower bound
+    'False = does not have a lower bound
+'-----------------------------------------------------------------------------------------------------------------------------
+Dim lngLBound As Long
+'-----------------------------------------------------------------------------------------------------------------------------
+On Error GoTo ErrHandler
+'-----------------------------------------------------------------------------------------------------------------------------
+lngLBound = LBound(vararX)
+'
+ArrayInitialized_1D = True
+Exit Function
+'-----------------------------------------------------------------------------------------------------------------------------
+'-----------------------------------------------------------------------------------------------------------------------------
+ErrHandler:
+On Error GoTo 0
+'
+End Function
+
+Private Function CompareASCII(strA As String, strB As String) As Integer
+'Compares two strings and determines which has the higher ASCII value (char by char- whichever has the higher char first is considered higher)
+'If the strings match for the entirety of one of the string (e.g., "toast" and "toaster"), fewer letters = lower value
+'"" = first, before any ASCII value
+'return values:
+    '1:  strA has higher ASCII value (strA comes "after" strB)
+    '0:  same string
+    '-1:  strB has higher ASCII value (strA comes "before" strB)
+'----------------------------------------------------------------------------------------------------------
+Dim intIndexA As Integer, intIndexB As Integer, intLenA As Integer, intLenB As Integer
+Dim strCharA As String, strCharB As String
+'----------------------------------------------------------------------------------------------------------
+'If strings are identical, returns appropriate value
+If strA = strB Then
+    CompareASCII = 0
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+If strA = "" Then
+    'strA is empty, has lower ASCII value
+    CompareASCII = -1
+    Exit Function
+End If
+If strB = "" Then
+    'strB is empty, so strA has higher ASCII value
+    CompareASCII = 1
+    Exit Function
+End If
+'----------------------------------------------------------------------------------------------------------
+'Gets length of both strings
+intLenA = Len(strA)
+intLenB = Len(strB)
+'Starting point = start of both strings
+intIndexA = 1
+intIndexB = 1
+'
+Do While (intIndexA <= intLenA) And (intIndexB <= intLenB)
+    'Gets current char for each string
+    strCharA = Mid(strA, intIndexA, 1)
+    strCharB = Mid(strB, intIndexB, 1)
+    '
+    If Asc(strCharA) < Asc(strCharB) Then
+        'strB has higher ASCII value
+        CompareASCII = -1
+        Exit Function
+    ElseIf Asc(strCharA) > Asc(strCharB) Then
+        'strA has higher ASCII value
+        CompareASCII = 1
+        Exit Function
+    Else
+        'Match, increments both indices
+        intIndexA = intIndexA + 1
+        intIndexB = intIndexB + 1
+    End If
+Loop
+'
+'If here, out of char in one of the strings, and both identical so far (e.g. "fact" and "factual")
+'The one with fewer letters has the lower value
+If intLenA < intLenB Then
+    'strA is shorter-  strB has higher ASCII value
+    CompareASCII = -1
+Else
+    'strA is longer-  strA has higher ASCII value
+    CompareASCII = 1
+End If
+'
+'
+End Function
+
+Private Function GetStrSect(strX As String, intType As Integer, blInclusive As Boolean, Optional ByVal lngFirstIndex As Long = -1, Optional ByVal lngLastIndex As Long = -1) As String
+'Author:  N. D. Stoneking
+'Returns string section from source string (strX)
+'intType
+    '-1 = gets portion of strX before the first index, lngFirstIndex (last index not relevant)
+    '0 = gets portion of strX from first to last index
+    '1 = gets portion of strX after the last index, lngLastIndex (first index not relevant)
+'blInclusive
+    'true:  includes first and/or last index (depending on what's relevant)
+    'false:  does not include first and/or last index (depending on what's relevant)
+        'note:  if given indices are outside the range of the string, will include those char anyway
+        'e.g. if intType = 0, lngFirstIndex = -12, lngLastIndex = 12, will get entire "ABCDE", even if blInclusive = False
+'NOTE:  if intType = 1, and lngLastIndex = -1, assumed not entered by user (will return empty string)
+'-----------------------------------------------------------------------------------------------------------------------------
+Dim blIncludeEndOfOrig As Boolean, blIncludeStartOfOrig As Boolean
+Dim lngLen As Long
+Dim strEndOfOrig As String, strMid As String, strStartOfOrig As String
+'-----------------------------------------------------------------------------------------------------------------------------
+'Gets length of original string
+lngLen = Len(strX)
+'If original string is empty, returns empty string
+If lngLen = 0 Then
+    Exit Function
+End If
+'-----------------------------------------------------------------------------------------------------------------------------
+If intType = -1 Then
+    'Getting everything before first index (and possibly at)
+    '
+    If (blInclusive And (lngFirstIndex >= lngLen)) Or ((blInclusive = False) And (lngFirstIndex > lngLen)) Then
+        'First index past the end (or at, if inclusive), returns the entire original string
+        GetStrSect = strX
+    ElseIf (blInclusive And (lngFirstIndex <= 0)) Or ((blInclusive = False) And (lngFirstIndex <= 1)) Then
+        'Nothing before first index, returns empty string
+    Else
+        If blInclusive Then
+            'Returns section at and before first index
+            GetStrSect = Left(strX, lngFirstIndex)
+        Else
+            'Returns section before first index
+            GetStrSect = Left(strX, lngFirstIndex - 1)
+        End If
+    End If
+ElseIf intType = 0 Then
+    'Gets everything in given range (might or might not include first and last index)
+    '
+    'Returns empty string if first index after end of string
+    If lngFirstIndex > lngLen Then
+        Exit Function
+    End If
+    'Returns empty string if last index before start of string
+    If lngLastIndex <= 0 Then
+        Exit Function
+    End If
+    '
+    'If first index is before start of string, puts it at the start
+    If lngFirstIndex < 1 Then
+        lngFirstIndex = 1
+        '
+        'Will need to make sure that the first index is included, even if exclusive
+        blIncludeStartOfOrig = True
+    End If
+    'If last index is beyond end of string, puts it at the end
+    If lngLastIndex > lngLen Then
+        lngLastIndex = lngLen
+        '
+        'Will need to make sure that the last index is included, even if exclusive
+        blIncludeEndOfOrig = True
+    End If
+    '
+    'Returns empty string if first index larger than last index
+    If lngFirstIndex > lngLastIndex Then
+        Exit Function
+    End If
+    '
+    If blInclusive Then
+        'Gets section from first to last index
+        GetStrSect = Mid(strX, lngFirstIndex, (lngLastIndex - lngFirstIndex + 1))
+    Else
+        'Gets section between first and last index (might also include first and/or last char of original string)
+        '
+        If blIncludeStartOfOrig Then
+            'Despite being exclusive, the first char of original string will be included
+            strStartOfOrig = Mid(strX, 1, 1)
+        End If
+        If blIncludeEndOfOrig Then
+            'Despite being exclusive, the last char of original string will be included
+            strEndOfOrig = Mid(strX, lngLen, 1)
+        End If
+        '
+        '
+        If (lngFirstIndex = lngLastIndex) Or (lngFirstIndex + 1 = lngLastIndex) Then
+            'Indices too close to get anything between them- no mid string
+        Else
+            'Gets string between first and last index
+            strMid = Mid(strX, (lngFirstIndex + 1), (lngLastIndex - lngFirstIndex - 1))
+        End If
+        '
+        'Returns string section
+        GetStrSect = strStartOfOrig & strMid & strEndOfOrig
+    End If
+ElseIf intType = 1 Then
+    'Gets everything after last index (and possibly at)
+    '
+    If lngLastIndex = -1 Then
+        'No user input, returns empty string
+    ElseIf (blInclusive And (lngLastIndex <= 1)) Or ((blInclusive = False) And (lngLastIndex < 1)) Then
+        'Last index before the start (or at, if inclusive), returns the entire original string
+        GetStrSect = strX
+    ElseIf (blInclusive And (lngLastIndex > lngLen)) Or ((blInclusive = False) And (lngLastIndex >= lngLen)) Then
+        'Nothing after last index, returns empty string
+    Else
+        If blInclusive Then
+            'Returns section at and after last index
+            GetStrSect = Right(strX, (lngLen - lngLastIndex + 1))
+        Else
+            'Returns section after last index
+            GetStrSect = Right(strX, (lngLen - lngLastIndex))
+        End If
+    End If
+Else
+    'Invalid type, returns empty string
+End If
+'
+'
+End Function
+
+Private Function IsCharDigit(chrX As String) As Boolean
+'Author:  N. D. Stoneking
+'Output
+    'true = digit (0-9)
+    'false otherwise
+'ASCII:
+    '48-57 = digits
+'-----------------------------------------------------------------------------------------------------------------------------
+'False if empty string
+If chrX = "" Then
+    Exit Function
+End If
+'-----------------------------------------------------------------------------------------------------------------------------
+Select Case Asc(chrX)
+    Case 48 To 57
+       IsCharDigit = True
+    Case Else
+       IsCharDigit = False
+End Select
+'
+End Function
+
+Public Function IsCharLetter(chrX As String) As Boolean
+'Output
+    'true = upper- or lowercase letter
+    'false otherwise
+'ASCII:
+    '65-90 = uppercase letters
+    '97-122 = lowercase letters
+'-----------------------------------------------------------------------------------------------------------------------------
+'False if empty string
+If chrX = "" Then
+    Exit Function
+End If
+'-----------------------------------------------------------------------------------------------------------------------------
+Select Case Asc(chrX)
+    Case 65 To 90
+       IsCharLetter = True
+    Case 97 To 122
+       IsCharLetter = True
+    Case Else
+       IsCharLetter = False
+End Select
+'
+End Function
+
+Private Function IsCharWhitespace(chrX As String) As Boolean
+'Author:  N. D. Stoneking
+'Output
+    'true = whitespace
+    'false otherwise
+'-----------------------------------------------------------------------------------------------------------------------------
+'False if empty string
+If chrX = "" Then
+    Exit Function
+End If
+'-----------------------------------------------------------------------------------------------------------------------------
+Select Case Asc(chrX)
+    Case Is < 33
+       IsCharWhitespace = True
+    Case 127
+        IsCharWhitespace = True
+    Case 160
+        IsCharWhitespace = True
+    Case 173
+        IsCharWhitespace = True
+    Case Else
+       IsCharWhitespace = False
+End Select
+'
+'
+End Function
+
+Private Function IsStringNonNegInteger(strX As String) As Boolean
+'Author:  N. D. Stoneking
+'FUNCTIONS USED:  IsCharDigit
+'Output
+    'true = integer (zero or more)
+        'e.g.: "0", "-0" (a weird case), "123"
+    'false otherwise
+        'e.g.: "-4", "1.2", "ABC", "ABC123"
+'Note:  does not check if the number can be handled by Excel (might be too large)
+'-----------------------------------------------------------------------------------------------------------------------------
+Dim intIndex As Integer
+'-----------------------------------------------------------------------------------------------------------------------------
+'False if empty string
+If strX = "" Then
+    Exit Function
+End If
+'-----------------------------------------------------------------------------------------------------------------------------
+'Checks all char in string until non-numerical char found, or string is complete
+'First index may be "-" ("-0" possible)
+For intIndex = 1 To Len(strX)
+    If intIndex = 1 Then
+        If (IsCharDigit(Mid(strX, intIndex, 1)) = False) And (Mid(strX, intIndex, 1) <> "-") Then
+            IsStringNonNegInteger = False
+            Exit Function
+        End If
+    Else
+        If IsCharDigit(Mid(strX, intIndex, 1)) = False Then
+            IsStringNonNegInteger = False
+            Exit Function
+        End If
+    End If
+Next intIndex
+'
+If CInt(strX) >= 0 Then
+    'String is non-negative integer
+    IsStringNonNegInteger = True
+Else
+    'String is negative integer
+    IsStringNonNegInteger = False
+End If
+'
+End Function
+
+Private Function IsStringPosInteger(strX As String) As Boolean
+'Author:  N. D. Stoneking
+'FUNCTIONS USED:  IsCharDigit
+'Output
+    'true = integer (positive- above zero)
+        'e.g.: "123"
+    'false otherwise
+        'e.g.: "0", "-4", "1.2", "ABC", "ABC123"
+'Note:  does not check if the number can be handled by Excel (might be too large)
+'-----------------------------------------------------------------------------------------------------------------------------
+Dim intIndex As Integer
+'-----------------------------------------------------------------------------------------------------------------------------
+'False if empty string
+If strX = "" Then
+    Exit Function
+End If
+'-----------------------------------------------------------------------------------------------------------------------------
+'Checks all char in string until non-numerical char found, or string is complete
+For intIndex = 1 To Len(strX)
+    If IsCharDigit(Mid(strX, intIndex, 1)) = False Then
+        IsStringPosInteger = False
+        Exit Function
+    End If
+Next intIndex
+'
+If CInt(strX) > 0 Then
+    'String is positive integer
+    IsStringPosInteger = True
+Else
+    'String is zero, not a positive integer
+    IsStringPosInteger = False
+End If
+'
+End Function
+
+Private Function OppositeCase(strX As String) As String
+'Author: N. D. Stoneking
+'Converts string to its opposite case, char by char
+'----------------------------------------------------------------------------------------------------------
+Dim intAsc As Integer, intIndex As Integer
+Dim strChar As String, strCharNew As String, strResult As String
+'----------------------------------------------------------------------------------------------------------
+'ASCII value for "a"
+Const ASCII_LCase_Min As Integer = 97
+'ASCII value for "z"
+Const ASCII_LCase_Max As Integer = 122
+'ASCII value for "A"
+Const ASCII_UCase_Min As Integer = 65
+'ASCII value for "Z"
+Const ASCII_UCase_Max As Integer = 90
+'----------------------------------------------------------------------------------------------------------
+For intIndex = 1 To Len(strX)
+    'Gets char and ASCII value for char
+    strChar = Mid(strX, intIndex, 1)
+    intAsc = Asc(strChar)
+    '----------------------------------------------------------------------------------------------------------
+    If (intAsc >= ASCII_LCase_Min) And (intAsc <= ASCII_LCase_Max) Then
+        'Char is lowercase letter, makes uppercase
+        strCharNew = UCase(strChar)
+    ElseIf (intAsc >= ASCII_UCase_Min) And (intAsc <= ASCII_UCase_Max) Then
+        'Char is uppercase letter, makes lowercase
+        strCharNew = LCase(strChar)
+    Else
+        'Char is not letter, leaves alone
+        strCharNew = strChar
+    End If
+    '----------------------------------------------------------------------------------------------------------
+    'Adds char to result
+    strResult = strResult & strCharNew
+Next intIndex
+'
+'Returns result
+OppositeCase = strResult
+'
+'
+End Function
+

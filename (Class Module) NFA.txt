@@ -1,0 +1,65 @@
+'Independent Regex:  NFA class module
+'Version:  1.0
+'Date:  November 2021
+'Other required class modules:  REGEX, State
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+Option Explicit
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'State where NFA starts (essentially a root)
+Private lngStartStateID_NFA As Long
+'Start where NFA ends (mostly used for building purposes)
+Private lngEndStateID_NFA As Long
+'----------------------------------------------------------------------------------------------------------
+'intClass constants (same as REGEX and State)
+Private Const intOneOut As Integer = 1
+Private Const intSplit As Integer = 2
+Private Const intMatch As Integer = 3
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+'----------------------------------------------------------------------------------------------------------
+
+Public Function Setup(statearStates_REGEX() As State, Optional strEleX As String = "")
+'Sets up new NFA, possibly with a string element in the start state
+'----------------------------------------------------------------------------------------------------------
+Dim lngNewEndID As Long, lngNewStartID As Long
+Dim stateNewEnd As New State, stateNewStart As New State
+'----------------------------------------------------------------------------------------------------------
+'Creates a new start state
+Set stateNewStart = New State
+stateNewStart.Setup statearStates_REGEX, intOneOut, strEleX
+lngNewStartID = stateNewStart.GetID()
+'
+'Creates a new end state
+Set stateNewEnd = New State
+stateNewEnd.Setup statearStates_REGEX, intMatch
+lngNewEndID = stateNewEnd.GetID()
+'----------------------------------------------------------------------------------------------------------
+'Makes the end the child of the start
+stateNewStart.AddOutArrow statearStates_REGEX, lngNewEndID
+'----------------------------------------------------------------------------------------------------------
+'Sets the new start and end as the start and end of the NFA
+lngStartStateID_NFA = lngNewStartID
+lngEndStateID_NFA = lngNewEndID
+'
+'
+End Function
+
+Public Function GetEndStateID() As Long
+GetEndStateID = lngEndStateID_NFA
+End Function
+
+Public Function GetStartStateID() As Long
+GetStartStateID = lngStartStateID_NFA
+End Function
+
+Public Function SetEndStateID(lngEndStateID_NFAX As Long)
+lngEndStateID_NFA = lngEndStateID_NFAX
+End Function
+
+Public Function SetStartStateID(lngStartStateID_NFAX As Long)
+lngStartStateID_NFA = lngStartStateID_NFAX
+End Function
